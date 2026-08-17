@@ -25,7 +25,7 @@ import * as reviewsRepo from "../src/repositories/reviews.repository.js";
 const WORKER_EMAIL = "sairoshan961@gmail.com";
 const WORKER_NAME = "Sai Roshan";
 const BUSINESS_EMAIL = "markantan01031952@gmail.com"; // existing real "Markantan K" account
-const FEE_PCT = 8;
+const FEE_PCT = 15;
 
 function daysAgo(days) {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
@@ -212,7 +212,7 @@ async function main() {
           type: "PLATFORM_FEE",
           direction: "debit",
           amount: fee,
-          referenceNote: `Platform fee (${FEE_PCT}%) – ${spec.title}`,
+          referenceNote: `Platform fee – ${spec.title}`,
         },
         client
       );

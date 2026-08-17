@@ -27,7 +27,7 @@ const WORKER_EMAIL = "arun0362004@gmail.com";
 const BUSINESS_EMAIL = "markantan01031952@gmail.com";
 const WORKER_NAME = "Arunkumar P";
 const BUSINESS_NAME = "Markantan K";
-const FEE_PCT = 8;
+const FEE_PCT = 15;
 
 function daysAgo(days) {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
@@ -218,7 +218,7 @@ async function main() {
           type: "PLATFORM_FEE",
           direction: "debit",
           amount: fee,
-          referenceNote: `Platform fee (${FEE_PCT}%) – ${spec.title}`,
+          referenceNote: `Platform fee – ${spec.title}`,
         },
         client
       );

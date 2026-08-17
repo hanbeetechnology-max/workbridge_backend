@@ -14,6 +14,7 @@
     "migrate:pending-signups": "node scripts/migrate-pending-signups.js",
     "migrate:perk-effects": "node scripts/migrate-035-perk-effects.js",
     "migrate:budget-negotiation": "node scripts/migrate-036-budget-negotiation.js",
+    "migrate:flat-platform-fee": "node scripts/migrate-037-flat-platform-fee.js",
     "test": "node --test"
   },
   "dependencies": {

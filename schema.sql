@@ -239,7 +239,7 @@ CREATE TABLE projects (
   title             TEXT NOT NULL,
   description       TEXT,
   budget            NUMERIC(12, 2) NOT NULL CHECK (budget > 0),
-  platform_fee_pct  NUMERIC(5, 2) NOT NULL DEFAULT 8.00,
+  platform_fee_pct  NUMERIC(5, 2) NOT NULL DEFAULT 15.00,
   status            project_status NOT NULL DEFAULT 'INVITED',
   deadline          DATE,
   -- Distinct from `deadline` above (the DELIVERY date) — application_deadline
@@ -698,25 +698,23 @@ CREATE INDEX idx_blocked_attempts_thread_id  ON blocked_message_attempts (thread
 CREATE INDEX idx_blocked_attempts_sender_id  ON blocked_message_attempts (sender_id);
 CREATE INDEX idx_blocked_attempts_status     ON blocked_message_attempts (status);
 
--- ─── The Abstracted Ladder's backend-only config ─────────────────────────────
--- MASTER_ECONOMY_PLAN.md Part 5a — real fee percentages live only here,
--- looked up by level at project completion. No API route ever serves
--- platform_fee_pct to a client; only tier_name may surface in UI copy.
+-- ─── Level/tier config ────────────────────────────────────────────────────
+-- Tier names by level threshold, used for the Silver-tier urgent-job gate
+-- and tier-name UI copy. The platform fee is flat (see projects.platform_fee_pct
+-- default) and is not tier-dependent — this table carries no fee column.
 CREATE TABLE gamification_config (
   level_threshold   INTEGER PRIMARY KEY,
   tier_name         VARCHAR(50) NOT NULL,
-  platform_fee_pct  NUMERIC(4, 2) NOT NULL,
 
-  CONSTRAINT chk_level_threshold_min CHECK (level_threshold >= 1),
-  CONSTRAINT chk_platform_fee_pct_range CHECK (platform_fee_pct BETWEEN 0 AND 100)
+  CONSTRAINT chk_level_threshold_min CHECK (level_threshold >= 1)
 );
 
-INSERT INTO gamification_config (level_threshold, tier_name, platform_fee_pct) VALUES
-  (1,   'Standard', 10.00),
-  (50,  'Silver',   9.00),
-  (100, 'Gold',     8.50),
-  (150, 'Platinum', 8.25),
-  (200, 'Diamond',  8.00);
+INSERT INTO gamification_config (level_threshold, tier_name) VALUES
+  (1,   'Standard'),
+  (50,  'Silver'),
+  (100, 'Gold'),
+  (150, 'Platinum'),
+  (200, 'Diamond');
 
 -- MASTER_ECONOMY_PLAN.md Part 1/Part 11 — the real per-event Ledger, the
 -- actual source of truth a Ledger UI reads from (not just the running

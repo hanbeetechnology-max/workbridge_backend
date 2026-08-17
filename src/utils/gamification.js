@@ -43,10 +43,9 @@ export function calculateLevel(xp) {
 
 // getTierData(level) — the UI Abstraction Ladder (MASTER_ECONOMY_PLAN.md
 // Part 5a). Deliberately returns ONLY a display name and a color theme —
-// never a fee percentage. The real platform_fee_pct lives exclusively in
-// the gamification_config table (migrations/012_gamification_foundation.sql)
-// and must never be looked up or exposed through this function — keeping
-// that separation is the entire point of the Abstracted Ladder.
+// never a fee percentage. The platform fee is flat (projects.platform_fee_pct
+// default) and is not tier-dependent; this function must never surface it,
+// keeping that separation the entire point of the Abstracted Ladder.
 export function getTierData(level) {
   const safeLevel = Math.max(1, Number(level) || 1);
 

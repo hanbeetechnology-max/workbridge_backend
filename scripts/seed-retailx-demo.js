@@ -103,7 +103,7 @@ async function main() {
   ]);
 
   const budget = 52000;
-  const feePct = 8;
+  const feePct = 15;
   const fee = Math.round(budget * (feePct / 100));
   const earnings = budget - fee;
 
@@ -160,7 +160,7 @@ async function main() {
         type: "PLATFORM_FEE",
         direction: "debit",
         amount: fee,
-        referenceNote: `Platform fee (${feePct}%) – ${PROJECT_TITLE}`,
+        referenceNote: `Platform fee – ${PROJECT_TITLE}`,
       },
       client
     );

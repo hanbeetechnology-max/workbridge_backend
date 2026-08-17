@@ -16,7 +16,7 @@ import * as threadsRepo from "../repositories/threads.repository.js";
 import { emitProjectEvent } from "../realtime/events.js";
 import { sendEscrowFundedSms } from "../services/sms.service.js";
 
-const PLATFORM_FEE_PCT_FALLBACK = 8;
+const PLATFORM_FEE_PCT_FALLBACK = 15;
 
 function round2(n) {
   return Math.round(n * 100) / 100;
@@ -222,7 +222,7 @@ export const resolveDispute = asyncHandler(async (req, res) => {
         type: "PLATFORM_FEE",
         direction: "debit",
         amount: fee,
-        referenceNote: `Platform fee (${feePct}%) – ${project.title}`,
+        referenceNote: `Platform fee – ${project.title}`,
       },
       client
     );

@@ -25,7 +25,7 @@ const COMPLETION_TOKEN_REWARD = 25;
 const BUSINESS_COMPLETION_XP_REWARD = 30;
 const BUSINESS_COMPLETION_TOKEN_REWARD = 15;
 
-const PLATFORM_FEE_PCT_FALLBACK = 8; // schema.sql's projects.platform_fee_pct default
+const PLATFORM_FEE_PCT_FALLBACK = 15; // schema.sql's projects.platform_fee_pct default
 
 // GET /api/projects — list projects the caller participates in. "?role=" is
 // optional (defaults to both); a caller can never list someone else's
@@ -395,7 +395,7 @@ export const completeProject = asyncHandler(async (req, res) => {
         type: "PLATFORM_FEE",
         direction: "debit",
         amount: fee,
-        referenceNote: `Platform fee (${feePct}%) – ${project.title}`,
+        referenceNote: `Platform fee – ${project.title}`,
       },
       client
     );
