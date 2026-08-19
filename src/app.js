@@ -7,6 +7,16 @@ import { apiLimiter } from "./middleware/rateLimit.js";
 
 export const app = express();
 
+// Render's own load balancer sits in front of this process (and Cloudflare
+// may sit in front of that, for the custom domain) — both set X-Forwarded-For.
+// Without this, Express's default "don't trust any proxy" leaves
+// express-rate-limit unable to tell a real client IP from the proxy's own,
+// which it treats as a misconfiguration and throws on every request (see
+// ERR_ERL_UNEXPECTED_X_FORWARDED_FOR in production logs). `1` trusts exactly
+// the immediate hop (Render's LB) — the standard, documented setting for an
+// Express app deployed behind a single hosting-platform proxy.
+app.set("trust proxy", 1);
+
 // Standard security headers (HSTS, X-Content-Type-Options, X-Frame-Options,
 // etc.). crossOriginResourcePolicy relaxed to "cross-origin" — this API is
 // deliberately served from a different origin than the frontend (see
