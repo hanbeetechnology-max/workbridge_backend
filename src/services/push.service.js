@@ -1,5 +1,6 @@
 import webpush from "web-push";
 import * as pushSubscriptionsRepo from "../repositories/push_subscriptions.repository.js";
+import * as usersRepo from "../repositories/users.repository.js";
 
 // Same "optional, silent no-op without config" convention as
 // email.service.js's requireEmailConfig — push is a real feature once
@@ -50,8 +51,19 @@ export function getVapidPublicKey() {
 // subscription the push service reports as gone (404/410 — uninstalled,
 // permission revoked, or the browser expired it) so listForUser stops
 // carrying dead weight.
-export async function sendPushToUser(userId, { title, body, url }) {
+// `category` ("chat" | "projects" | "payments") is optional — omitted for
+// notifications with no matching Settings toggle (e.g. support replies),
+// which always send. When present, it's checked against the user's
+// notification_prefs (Settings > Notifications) before anything is sent —
+// a category a user has turned off should never buzz their device just
+// because push itself is still subscribed.
+export async function sendPushToUser(userId, { title, body, url }, category) {
   if (!config) return;
+
+  if (category) {
+    const user = await usersRepo.findById(userId);
+    if (user && user.notification_prefs?.[category] === false) return;
+  }
 
   const subscriptions = await pushSubscriptionsRepo.listForUser(userId);
   if (subscriptions.length === 0) return;

@@ -34,6 +34,17 @@ export async function linkGoogleId(id, googleId) {
   return rows[0] ?? null;
 }
 
+// Settings > Notifications — merges the given keys into the existing JSONB
+// rather than replacing it wholesale, so toggling one category can never
+// silently reset the others to their defaults.
+export async function updateNotificationPrefs(id, prefsPatch) {
+  const { rows } = await query(
+    `UPDATE users SET notification_prefs = notification_prefs || $2::jsonb WHERE id = $1 RETURNING *`,
+    [id, JSON.stringify(prefsPatch)]
+  );
+  return rows[0] ?? null;
+}
+
 // Lightweight — only the one column guard.js and the login flow actually
 // need, so a banned-user check doesn't pull the whole row on every request.
 export async function isActive(id) {
@@ -118,12 +129,12 @@ export async function adjustBehaviorScore(client, id, delta) {
 // signup is only ever created there, once the OTP check already succeeded
 // (see pending_signups / auth.controller.js), so it's always verified from
 // the moment it exists.
-export async function create({ role, name, email, phone, passwordHash, emailVerified = true, googleId = null, avatarUrl = null }) {
+export async function create({ role, name, email, phone, passwordHash, emailVerified = true, googleId = null, avatarUrl = null, hasUsablePassword = true }) {
   const { rows } = await query(
-    `INSERT INTO users (role, name, email, phone, password_hash, email_verified, google_id, avatar_url)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `INSERT INTO users (role, name, email, phone, password_hash, email_verified, google_id, avatar_url, has_usable_password)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING *`,
-    [role, name, email, phone ?? null, passwordHash, emailVerified, googleId, avatarUrl]
+    [role, name, email, phone ?? null, passwordHash, emailVerified, googleId, avatarUrl, hasUsablePassword]
   );
   return rows[0];
 }
@@ -216,9 +227,13 @@ export async function setPinnedBadge(id, level) {
 
 // POST /api/auth/reset-password's only DB write — the reset OTP itself is
 // verified by the caller (auth.controller.js) before this ever runs.
+// Also flips has_usable_password to true — both call sites (Settings'
+// Change/Set Password and the OTP-based Forgot Password flow) end with the
+// user holding a real, typeable password, even if they started from a
+// Google-only account that never had one.
 export async function updatePassword(id, passwordHash) {
   const { rows } = await query(
-    `UPDATE users SET password_hash = $2 WHERE id = $1 RETURNING *`,
+    `UPDATE users SET password_hash = $2, has_usable_password = true WHERE id = $1 RETURNING *`,
     [id, passwordHash]
   );
   return rows[0] ?? null;

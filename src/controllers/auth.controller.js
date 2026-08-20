@@ -296,6 +296,7 @@ export const googleAuth = asyncHandler(async (req, res) => {
           emailVerified: true,
           googleId,
           avatarUrl: payload.picture || null,
+          hasUsablePassword: false,
         });
       } catch (err) {
         if (err.code === "23505") throw ApiError.conflict("An account with this email already exists.");
@@ -407,13 +408,31 @@ export const changePassword = asyncHandler(async (req, res) => {
   const user = await usersRepo.findById(req.user.id);
   if (!user) throw ApiError.notFound("User not found.");
 
-  const matches = await bcrypt.compare(currentPassword, user.password_hash);
-  if (!matches) throw ApiError.unauthorized("Current password is incorrect.");
+  // Google-only accounts (has_usable_password = false) hold a random,
+  // never-typeable password_hash (see generateUnusablePasswordHash above) —
+  // there is no real "current password" for them to prove, so skip that
+  // check entirely rather than reject every value a real user could ever
+  // type. The route is already behind `guard`, so the JWT alone is the
+  // proof of identity for this one case.
+  if (user.has_usable_password) {
+    if (!currentPassword) throw ApiError.badRequest("Enter your current password.");
+    const matches = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!matches) throw ApiError.unauthorized("Current password is incorrect.");
+  }
 
   const passwordHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
   await usersRepo.updatePassword(user.id, passwordHash);
 
   res.json({ data: { message: "Password updated." } });
+});
+
+// PATCH /api/auth/notification-prefs — Settings > Notifications' per-category
+// toggles. Merges into the existing JSONB (see usersRepo.updateNotificationPrefs)
+// so toggling one category never resets the others.
+export const updateNotificationPrefs = asyncHandler(async (req, res) => {
+  const updated = await usersRepo.updateNotificationPrefs(req.user.id, req.body);
+  const { password_hash, ...safe } = updated;
+  res.json({ data: safe });
 });
 
 // PATCH /api/auth/deactivate-self — behind `guard`. Settings page's Danger

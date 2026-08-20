@@ -47,10 +47,22 @@ export const resetPasswordSchema = z.object({
 
 // Settings page's Security & Auth tab — a logged-in password change,
 // distinct from the forgot-password/reset-password OTP flow above.
+// currentPassword is optional here — Google-only accounts (no real password
+// ever set, see has_usable_password) hit this same endpoint to SET their
+// first password instead of changing one; the controller decides whether to
+// require/verify it based on that flag.
 export const changePasswordSchema = z.object({
-  currentPassword: z.string().min(1, "Enter your current password"),
+  currentPassword: z.string().min(1).optional(),
   newPassword: z.string().min(8, "Password must be at least 8 characters"),
 });
+
+// Settings > Notifications — only these three keys exist as toggles today
+// (see events.js's pushCategoryFor); .partial() so a client can send just
+// the one category it changed.
+export const notificationPrefsSchema = z
+  .object({ chat: z.boolean(), projects: z.boolean(), payments: z.boolean() })
+  .partial()
+  .refine((body) => Object.keys(body).length > 0, "Provide at least one preference to update.");
 
 // Settings page's Danger Zone — self-service deactivation (not permanent
 // deletion, see usersRepo.setActive's callers). Requires typing a literal

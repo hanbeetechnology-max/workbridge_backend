@@ -11,9 +11,24 @@ import * as notificationsRepo from "../repositories/notifications.repository.js"
 // chat message send, a status change, etc. must succeed regardless of
 // whether push is configured or a delivery fails (see sendPushToUser's own
 // try/catch per subscription).
-function firePush(userId, copy) {
+// `category` maps to Settings > Notifications' toggles ("chat" | "projects"
+// | "payments") and is checked by sendPushToUser against the recipient's
+// notification_prefs; omitted for events with no matching toggle (broadcasts,
+// support replies), which always send.
+function firePush(userId, copy, category) {
   if (!copy) return;
-  sendPushToUser(userId, copy).catch((err) => console.error("[push] sendPushToUser threw:", err));
+  sendPushToUser(userId, copy, category).catch((err) => console.error("[push] sendPushToUser threw:", err));
+}
+
+// notifType ("PROJECT" | "PAYMENT" | "SYSTEM") is the notifications-table
+// taxonomy (unrelated to and pre-dating the Settings toggles below) — this
+// maps it to the closest toggle category rather than introducing a second,
+// parallel type system. SYSTEM has no toggle (support replies etc. always
+// send), so it maps to undefined.
+function pushCategoryFor(notifType) {
+  if (notifType === "PAYMENT") return "payments";
+  if (notifType === "PROJECT") return "projects";
+  return undefined;
 }
 
 // Persists the exact same copy a push notification used into the
@@ -169,14 +184,15 @@ export function emitProjectEvent(project, type, payload = {}) {
   }
 
   const notifType = notificationTypeFor(type);
+  const category = pushCategoryFor(notifType);
   if (project.worker_id && project.worker_id !== payload.senderId) {
     const workerCopy = buildProjectPushCopy(type, payload, project, "worker");
-    firePush(project.worker_id, workerCopy);
+    firePush(project.worker_id, workerCopy, category);
     fireNotification(project.worker_id, workerCopy, notifType);
   }
   if (project.business_id !== payload.senderId) {
     const businessCopy = buildProjectPushCopy(type, payload, project, "business");
-    firePush(project.business_id, businessCopy);
+    firePush(project.business_id, businessCopy, category);
     fireNotification(project.business_id, businessCopy, notifType);
   }
 }
@@ -208,12 +224,12 @@ export function emitThreadEvent(thread, type, payload = {}) {
   const notifType = notificationTypeFor(type);
   if (thread.worker_id !== payload.senderId) {
     const workerCopy = buildThreadPushCopy(type, "worker");
-    firePush(thread.worker_id, workerCopy);
+    firePush(thread.worker_id, workerCopy, "chat");
     fireNotification(thread.worker_id, workerCopy, notifType);
   }
   if (thread.business_id !== payload.senderId) {
     const businessCopy = buildThreadPushCopy(type, "business");
-    firePush(thread.business_id, businessCopy);
+    firePush(thread.business_id, businessCopy, "chat");
     fireNotification(thread.business_id, businessCopy, notifType);
   }
 }
@@ -256,7 +272,7 @@ export function emitToUser(userId, type, payload = {}) {
     .then((user) => {
       const url = user?.role === "business" ? BUSINESS_DASHBOARD_URL : WORKER_JOB_FEED_URL;
       const fullCopy = { ...copy, url };
-      firePush(userId, fullCopy);
+      firePush(userId, fullCopy, "projects");
       fireNotification(userId, fullCopy, "PROJECT");
     })
     .catch((err) => console.error("[push] Could not resolve recipient role:", err));

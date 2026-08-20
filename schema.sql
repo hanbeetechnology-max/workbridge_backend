@@ -84,6 +84,13 @@ CREATE TABLE users (
   -- random, never-typeable bcrypt hash for these accounts rather than
   -- going nullable — see migrations/029_google_oauth.sql.
   google_id         TEXT UNIQUE,
+  -- False only for the brand-new-Google-signup branch of googleAuth()
+  -- (see migrations/038_password_flag.sql) — those accounts' password_hash
+  -- is the random, never-typeable value above, so "Change Password"'s
+  -- current-password check can never succeed for them by construction.
+  -- Settings' Security tab reads this to show a "Set Password" flow instead
+  -- (skips the current-password field entirely) rather than an impossible one.
+  has_usable_password BOOLEAN NOT NULL DEFAULT true,
   avatar_url        TEXT,
   title             TEXT,                          -- e.g. "Full-Stack Developer" (worker) / "Retail" (business industry)
   verified          BOOLEAN NOT NULL DEFAULT FALSE, -- ID-verified worker / payment-verified business
@@ -108,6 +115,9 @@ CREATE TABLE users (
   -- localStorage-only flag, so it doesn't reappear on a different device.
   -- See migrations/033_onboarding.sql.
   has_completed_onboarding BOOLEAN NOT NULL DEFAULT FALSE,
+  -- Per-category push notification preferences (Settings > Notifications).
+  -- See migrations/039_notification_prefs.sql.
+  notification_prefs JSONB NOT NULL DEFAULT '{"chat": true, "projects": true, "payments": true}'::jsonb,
   -- Minimal real Support-tier RBAC — meaningless for worker/business rows,
   -- only ever checked when role = 'admin'. Defaults TRUE so every admin
   -- account keeps the full access it already had; a super admin dials an

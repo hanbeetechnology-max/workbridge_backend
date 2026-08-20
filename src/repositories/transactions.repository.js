@@ -18,10 +18,20 @@ export async function insert(
 // business it belongs to. The fee is real and still fully audited (the row
 // exists, just never returned here); admin-facing analytics reads it
 // straight from the table, unfiltered — see admin.repository.js.
+//
+// FUNDS_SECURED is also excluded, but only from the WORKER's side of that
+// same row (worker_id = $1) — it carries the project's full pre-fee budget,
+// and showing it next to the worker's own PAYOUT row (the post-fee 85%) lets
+// the exact 15% be derived by subtraction, the same leak the PLATFORM_FEE
+// exclusion above exists to prevent. The business's own view of their own
+// deposit is unaffected — worker_id and business_id are never the same
+// person on one row, so this only ever suppresses the worker's copy.
 export async function listForUser(userId, { page, pageSize }) {
   const { rows } = await query(
     `SELECT * FROM transactions
-     WHERE (worker_id = $1 OR business_id = $1) AND type != 'PLATFORM_FEE'
+     WHERE (worker_id = $1 OR business_id = $1)
+       AND type != 'PLATFORM_FEE'
+       AND NOT (type = 'FUNDS_SECURED' AND worker_id = $1)
      ORDER BY created_at DESC
      LIMIT $2 OFFSET $3`,
     [userId, pageSize, (page - 1) * pageSize]
