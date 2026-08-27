@@ -14,6 +14,7 @@ import { pushRouter } from "./push.routes.js";
 import { publicRouter } from "./public.routes.js";
 import { notificationsRouter } from "./notifications.routes.js";
 import { threadsRouter } from "./threads.routes.js";
+import { paymentsRouter } from "./payments.routes.js";
 
 export const apiRouter = Router();
 
@@ -32,6 +33,11 @@ apiRouter.use("/push", pushRouter);
 apiRouter.use("/public", publicRouter);
 apiRouter.use("/notifications", notificationsRouter);
 apiRouter.use("/threads", threadsRouter);
+// The webhook itself (POST /api/payments/webhook) is NOT here — it's
+// mounted directly on `app` in app.js, ahead of the global express.json()
+// parser, so its raw request body survives for signature verification.
+// This router only ever carries normal JWT-guarded endpoints.
+apiRouter.use("/payments", paymentsRouter);
 
 // Dev-only token issuance — never mounted in production. See dev.routes.js.
 if (process.env.NODE_ENV !== "production") {

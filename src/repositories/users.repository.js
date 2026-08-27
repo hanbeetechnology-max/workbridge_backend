@@ -274,6 +274,57 @@ export async function findForUpdate(client, id) {
   return rows[0] ?? null;
 }
 
+// POST /api/payments/route-account — persists only the acc_XXXX id Razorpay
+// hands back, never the raw bank account number/IFSC the worker submitted
+// (those go straight through to Razorpay's own createLinkedAccount call
+// and are never written to any WorkBridge table).
+export async function setRazorpayAccount(userId, { accountId, status, email }, client = { query }) {
+  const { rows } = await client.query(
+    `UPDATE users
+     SET razorpay_account_id = $2, razorpay_account_status = $3::razorpay_account_status,
+         razorpay_account_email = $4, razorpay_linked_at = now()
+     WHERE id = $1
+     RETURNING *`,
+    [userId, accountId, status, email]
+  );
+  return rows[0] ?? null;
+}
+
+// Webhook-driven (account.activated / account.under_review /
+// account.needs_clarification) — keeps status current without WorkBridge
+// ever having to poll Razorpay for it.
+export async function updateRazorpayAccountStatusByAccountId(accountId, status) {
+  const { rows } = await query(
+    `UPDATE users SET razorpay_account_status = $2::razorpay_account_status WHERE razorpay_account_id = $1 RETURNING *`,
+    [accountId, status]
+  );
+  return rows[0] ?? null;
+}
+
+// A worker's saved payout destination — lets completeProject/resolveDispute
+// pay them directly via RazorpayX at completion without retyping bank/UPI
+// details each time (see migrations/044_worker_payout_account.sql). Same
+// payout_method/payout_details shape as withdrawal_requests, just persisted
+// as a default here instead of per-request.
+export async function setPayoutDetails(userId, { payoutMethod, payoutDetails }) {
+  const { rows } = await query(
+    `UPDATE users SET payout_method = $2::payout_method, payout_details = $3 WHERE id = $1 RETURNING *`,
+    [userId, payoutMethod, payoutDetails]
+  );
+  return rows[0] ?? null;
+}
+
+// The webhook's cached-lookup write, kept in sync the same moment a
+// subscription_payments row is marked PAID — see that table's own comment
+// on why this cache exists (avoids a join on every page load).
+export async function setSubscription(client, userId, { tier, expiresAt }) {
+  const { rows } = await client.query(
+    `UPDATE users SET subscription_tier = $2::subscription_tier, subscription_expires_at = $3 WHERE id = $1 RETURNING *`,
+    [userId, tier, expiresAt]
+  );
+  return rows[0] ?? null;
+}
+
 export async function incrementWalletBalance(client, userId, delta) {
   const { rows } = await client.query(
     `UPDATE users SET wallet_balance = wallet_balance + $2 WHERE id = $1 RETURNING *`,

@@ -426,6 +426,36 @@ export const changePassword = asyncHandler(async (req, res) => {
   res.json({ data: { message: "Password updated." } });
 });
 
+const REVERIFY_TTL_MINUTES = 5;
+
+// POST /api/auth/verify-password — behind `guard`. Proves "the person at
+// this keyboard right now knows the account password," for gating a
+// sensitive change (e.g. a worker's payout destination) beyond just having
+// a valid session — a shared/unlocked device has the JWT but not the
+// password. Returns a short-lived, single-purpose token the caller then
+// attaches (X-Reverify-Token) to the actual change request; middleware.js's
+// requireReverify checks it's for THIS user and hasn't expired. Deliberately
+// separate from login's password check (a logged-in session, not a
+// logged-out one) and from changePassword above (which changes the
+// password itself, not a re-proof of the existing one).
+export const verifyPasswordForReauth = asyncHandler(async (req, res) => {
+  const { password } = req.body ?? {};
+  if (!password) throw ApiError.badRequest("Enter your password.");
+
+  const user = await usersRepo.findById(req.user.id);
+  if (!user) throw ApiError.notFound("User not found.");
+
+  if (!user.has_usable_password) {
+    throw ApiError.badRequest("Your account uses Google Sign-In and has no password to verify — contact support to change this.");
+  }
+
+  const matches = await bcrypt.compare(password, user.password_hash);
+  if (!matches) throw ApiError.unauthorized("Incorrect password.");
+
+  const reverifyToken = jwt.sign({ sub: user.id, purpose: "reverify" }, mustGetJwtSecret(), { expiresIn: `${REVERIFY_TTL_MINUTES}m` });
+  res.json({ data: { reverifyToken, expiresInSeconds: REVERIFY_TTL_MINUTES * 60 } });
+});
+
 // PATCH /api/auth/notification-prefs — Settings > Notifications' per-category
 // toggles. Merges into the existing JSONB (see usersRepo.updateNotificationPrefs)
 // so toggling one category never resets the others.

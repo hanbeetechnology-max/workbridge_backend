@@ -263,6 +263,75 @@ export async function resolveBudgetProposal(client, id, approve) {
   return rows[0] ?? null;
 }
 
+// The webhook's entry point — every Razorpay event carries the order id,
+// never our own project id, so this is how a payment.captured/failed
+// event finds its way back to the right row.
+export async function findByRazorpayOrderId(client, orderId) {
+  const { rows } = await client.query(`SELECT * FROM projects WHERE razorpay_order_id = $1 FOR UPDATE`, [orderId]);
+  return rows[0] ?? null;
+}
+
+// fundEscrow's counterpart to setRazorpayOrder below — records that THIS
+// project's PENDING_FUNDS came from the manual UTR/screenshot path, not a
+// Razorpay Checkout order. Without this, funding_method silently keeps its
+// schema default of 'RAZORPAY' even for a manually-funded project, which
+// broke the funding_method-based copy in InvoicePage.jsx/BusinessProjects.jsx
+// (both assumed a manually-funded project would say so).
+export async function setManualFundingMethod(client, id) {
+  const { rows } = await client.query(
+    `UPDATE projects SET funding_method = 'MANUAL_BANK_TRANSFER' WHERE id = $1 RETURNING *`,
+    [id]
+  );
+  return rows[0] ?? null;
+}
+
+// POST /api/projects/:id/checkout — persists the order id server-computed
+// at checkout time, before any money has actually moved (status only
+// flips to FUNDS_SECURED later, once the webhook confirms payment.captured
+// — see payments.controller.js / webhook.controller.js).
+export async function setRazorpayOrder(client, id, { orderId, businessFeePct }) {
+  const { rows } = await client.query(
+    `UPDATE projects
+     SET razorpay_order_id = $2, business_fee_pct = $3, funding_method = 'RAZORPAY'
+     WHERE id = $1
+     RETURNING *`,
+    [id, orderId, businessFeePct]
+  );
+  return rows[0] ?? null;
+}
+
+// The webhook's only write to the projects row on payment.captured —
+// separate from updateStatus above so the payment_id can be set in the
+// same statement as the status flip, atomically.
+export async function markFundsSecured(client, id, { paymentId }) {
+  const { rows } = await client.query(
+    `UPDATE projects
+     SET status = 'FUNDS_SECURED'::project_status,
+         razorpay_payment_id = $2,
+         timeline = timeline || jsonb_build_object('status', 'FUNDS_SECURED', 'at', now())
+     WHERE id = $1
+     RETURNING *`,
+    [id, paymentId]
+  );
+  return rows[0] ?? null;
+}
+
+export async function setRazorpayTransfer(client, id, transferId) {
+  const { rows } = await client.query(
+    `UPDATE projects SET razorpay_transfer_id = $2 WHERE id = $1 RETURNING *`,
+    [id, transferId]
+  );
+  return rows[0] ?? null;
+}
+
+export async function setRazorpayRefund(client, id, refundId) {
+  const { rows } = await client.query(
+    `UPDATE projects SET razorpay_refund_id = $2 WHERE id = $1 RETURNING *`,
+    [id, refundId]
+  );
+  return rows[0] ?? null;
+}
+
 export async function updateStatus(id, status, client = { query }, note = null) {
   const timelineEntry = note
     ? `jsonb_build_object('status', $2::text, 'at', now(), 'note', $3::text)`

@@ -10,6 +10,7 @@ import {
 import {
   cancelAndRefund,
   completeProject,
+  createCheckoutOrder,
   createProject,
   fundEscrow,
   getProject,
@@ -63,6 +64,10 @@ projectsRouter.get("/:id/candidates", listCandidatesForProject);
 // in the route table, not buried in an if-branch inside the generic PATCH
 // handler.
 projectsRouter.post("/:id/fund-escrow", requireRole("business"), fundEscrow);
+// Real Razorpay Checkout — the primary funding path; fund-escrow above
+// stays as the manual bank-transfer fallback (see createCheckoutOrder's
+// own comment in projects.controller.js for why both coexist).
+projectsRouter.post("/:id/checkout", requireRole("business"), createCheckoutOrder);
 // The business only ever *requests* a release now — the actual payout
 // (completeProject) requires WorkBridge staff to act on it from the Admin
 // Panel's Fund Releases tab, so this route is admin-only, not business.

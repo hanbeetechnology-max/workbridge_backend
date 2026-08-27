@@ -40,6 +40,7 @@ export const createSubmission = asyncHandler(async (req, res) => {
   emitProjectEvent(project, "SUBMISSION_CREATED", {
     submissionId: submission.id,
     submittedBy: req.user.id,
+    senderId: req.user.id,
   });
 
   res.status(201).json({ data: submission });

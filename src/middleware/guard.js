@@ -83,6 +83,32 @@ export function requireRole(...allowedRoles) {
   };
 }
 
+// requireReverify — gates a sensitive CHANGE (e.g. updating an
+// already-saved payout destination) behind a fresh password re-proof, on
+// top of the normal `guard` session check. Expects an X-Reverify-Token
+// header, issued by POST /api/auth/verify-password after the user just
+// typed their password again. Only meant for a subset of a route's calls
+// (e.g. "changing" vs "first-time adding" a payout destination) — callers
+// check that distinction themselves before invoking this, it isn't wired
+// into the router chain unconditionally.
+export function requireReverify(req) {
+  const token = req.headers["x-reverify-token"];
+  if (!token) {
+    throw ApiError.unauthorized("Please verify your password before changing this — it looks like you haven't yet.");
+  }
+
+  let payload;
+  try {
+    payload = jwt.verify(token, mustGetJwtSecret());
+  } catch {
+    throw ApiError.unauthorized("Password verification expired — please verify your password again.");
+  }
+
+  if (payload?.purpose !== "reverify" || payload?.sub !== req.user.id) {
+    throw ApiError.unauthorized("Invalid password verification — please verify your password again.");
+  }
+}
+
 function mustGetJwtSecret() {
   const secret = process.env.JWT_SECRET;
   if (!secret) {

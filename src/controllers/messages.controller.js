@@ -192,6 +192,7 @@ export const sendAttachmentMessage = asyncHandler(async (req, res) => {
   emitProjectEvent(project, "SUBMISSION_CREATED", {
     submissionId: submission.id,
     submittedBy: req.user.id,
+    senderId: req.user.id,
   });
   emitProjectEvent(project, "MESSAGE_CREATED", {
     messageId: message.id,
@@ -315,7 +316,7 @@ export const sendThreadAttachmentMessage = asyncHandler(async (req, res) => {
   // The project itself still gets its own event — DeliverablesPanel and
   // anything else scoped to that one project listens on the project room,
   // not the thread. The thread gets the chat-visible message event.
-  emitProjectEvent(project, "SUBMISSION_CREATED", { submissionId: submission.id, submittedBy: req.user.id });
+  emitProjectEvent(project, "SUBMISSION_CREATED", { submissionId: submission.id, submittedBy: req.user.id, senderId: req.user.id });
   emitThreadEvent(thread, "MESSAGE_CREATED", { messageId: message.id, senderId: req.user.id, projectId });
 
   res.status(201).json({ data: message });

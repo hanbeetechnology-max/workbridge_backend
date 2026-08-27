@@ -10,6 +10,11 @@ export async function insert(client, { workerId, amount, payoutMethod, payoutDet
   return rows[0];
 }
 
+export async function findById(id) {
+  const { rows } = await query(`SELECT * FROM withdrawal_requests WHERE id = $1`, [id]);
+  return rows[0] ?? null;
+}
+
 // FOR UPDATE — locks the row so two concurrent resolve attempts on the same
 // request can't both succeed (mirrors projects.repository.js's
 // findByIdForUpdate, same reasoning).
@@ -18,13 +23,13 @@ export async function findByIdForUpdate(client, id) {
   return rows[0] ?? null;
 }
 
-export async function markResolved(client, id, { status, adminNote, resolvedBy }) {
+export async function markResolved(client, id, { status, adminNote, resolvedBy, payoutId }) {
   const { rows } = await client.query(
     `UPDATE withdrawal_requests
-     SET status = $2, admin_note = $3, resolved_by = $4, resolved_at = now()
+     SET status = $2, admin_note = $3, resolved_by = $4, razorpay_payout_id = $5, resolved_at = now()
      WHERE id = $1
      RETURNING *`,
-    [id, status, adminNote ?? null, resolvedBy]
+    [id, status, adminNote ?? null, resolvedBy, payoutId ?? null]
   );
   return rows[0] ?? null;
 }

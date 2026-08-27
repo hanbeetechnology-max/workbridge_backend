@@ -39,12 +39,9 @@ export const createReview = asyncHandler(async (req, res) => {
     rating,
     feedback,
   });
+  await reviewsRepo.recomputeRatingAggregate(revieweeId);
 
-  // A real implementation also recomputes users.rating / reviews_count for
-  // revieweeId here (inside the same DB transaction) — omitted from this
-  // skeleton since it's a cached aggregate, not part of the review write's
-  // own consistency requirement the brief asked for.
-  emitProjectEvent(project, "REVIEW_SUBMITTED", { reviewId: review.id, reviewerId: req.user.id, revieweeId, rating });
+  emitProjectEvent(project, "REVIEW_SUBMITTED", { reviewId: review.id, reviewerId: req.user.id, senderId: req.user.id, revieweeId, rating });
 
   res.status(201).json({ data: review });
 });
@@ -61,6 +58,7 @@ export const updateReview = asyncHandler(async (req, res) => {
   if (!existing) throw ApiError.notFound("You haven't reviewed this project yet.");
 
   const review = await reviewsRepo.update({ projectId, reviewerId: req.user.id, rating, feedback });
+  await reviewsRepo.recomputeRatingAggregate(existing.reviewee_id);
   res.json({ data: review });
 });
 

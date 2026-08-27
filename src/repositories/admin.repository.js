@@ -21,7 +21,8 @@ export async function listPendingVerifications() {
 // vs verified (manual ID/payment review, see listPendingVerifications).
 export async function listAllUsers() {
   const { rows } = await query(
-    `SELECT id, name, email, phone, role, email_verified, verified, is_active, is_chat_banned, created_at
+    `SELECT id, name, email, phone, role, email_verified, verified, is_active, is_chat_banned, created_at,
+            can_ban_users, can_release_funds, subscription_tier, subscription_expires_at
      FROM users
      ORDER BY created_at DESC
      LIMIT 200`
@@ -120,7 +121,12 @@ export async function getPlatformStats() {
   const [{ rows: totalUsers }, { rows: jobsToday }, { rows: revenue }, { rows: pool }, { rows: totalProjects }, { rows: pendingVerifications }, { rows: openDisputes }] = await Promise.all([
     query(`SELECT count(*)::int AS count FROM users`),
     query(`SELECT count(*)::int AS count FROM projects WHERE created_at::date = now()::date`),
-    query(`SELECT COALESCE(sum(amount), 0)::numeric AS total FROM transactions WHERE type = 'PLATFORM_FEE'`),
+    // Real WorkBridge revenue is both fee legs of the disclosed 8%/7%
+    // split: PLATFORM_FEE_BUSINESS (collected at checkout) +
+    // PLATFORM_FEE (withheld at worker payout). Summing only PLATFORM_FEE
+    // here would silently under-report revenue by the entire business-side
+    // fee — the mistake this query used to make before this fix.
+    query(`SELECT COALESCE(sum(amount), 0)::numeric AS total FROM transactions WHERE type IN ('PLATFORM_FEE', 'PLATFORM_FEE_BUSINESS')`),
     query(
       `SELECT COALESCE(sum(budget), 0)::numeric AS total FROM projects WHERE status = ANY($1::project_status[])`,
       [FUNDS_HELD_STATUSES]
@@ -153,7 +159,7 @@ export async function getWeeklyRevenue() {
        COALESCE(sum(t.amount), 0)::numeric AS revenue
      FROM generate_series(current_date - interval '6 days', current_date, interval '1 day') AS d(day)
      LEFT JOIN transactions t
-       ON t.type = 'PLATFORM_FEE' AND t.created_at::date = d.day
+       ON t.type IN ('PLATFORM_FEE', 'PLATFORM_FEE_BUSINESS') AND t.created_at::date = d.day
      GROUP BY d.day
      ORDER BY d.day`
   );

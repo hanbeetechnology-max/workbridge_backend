@@ -77,19 +77,14 @@ export const createCandidate = asyncHandler(async (req, res) => {
     throw err;
   }
 
-  // A new application notifies the business; a new direct invite notifies
-  // the worker being invited — the other side of whichever action just
-  // happened. Neither is a project participant yet (worker_id is still
-  // null on an OPEN post), so this goes straight to their own user room
-  // rather than through emitProjectEvent.
-  if (source === "APPLICATION") {
-    emitToUser(project.business_id, "CANDIDATE_CREATED", {
-      candidateId: candidate.id,
-      projectId: project.id,
-      projectTitle: project.title,
-      source,
-    });
-  } else {
+  // A new direct invite notifies the worker being invited — a project
+  // being posted specifically for them is worth a push. A new application
+  // deliberately does NOT notify the business here: with a busy job post
+  // getting many applicants, a push per applicant reads as noise rather
+  // than signal — the business already sees the running count live on
+  // their Applicants tab, and gets notified for real once a candidate is
+  // actually accepted (CANDIDATE_ACCEPTED below).
+  if (source !== "APPLICATION") {
     emitToUser(workerId, "CANDIDATE_CREATED", {
       candidateId: candidate.id,
       projectId: project.id,
@@ -210,6 +205,7 @@ export const respondToCandidate = asyncHandler(async (req, res) => {
   // through the normal project rooms, same as every other status change.
   emitProjectEvent(result.assignedProject, "CANDIDATE_ACCEPTED", {
     candidateId: result.candidate.id,
+    senderId: req.user.id,
   });
 
   // Everyone else who applied or was invited lost out to this acceptance —

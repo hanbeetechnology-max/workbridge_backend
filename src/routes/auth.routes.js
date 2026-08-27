@@ -23,6 +23,7 @@ import {
   forgotPassword,
   resetPassword,
   changePassword,
+  verifyPasswordForReauth,
   updateNotificationPrefs,
   deactivateSelf,
   me,
@@ -60,5 +61,6 @@ authRouter.get("/me", guard, me);
 // these anyway — guard.js now blocks every non-GET request while
 // impersonating, not just these two.
 authRouter.post("/change-password", guard, validate(changePasswordSchema), changePassword);
+authRouter.post("/verify-password", guard, verifyPasswordForReauth);
 authRouter.patch("/notification-prefs", guard, validate(notificationPrefsSchema), updateNotificationPrefs);
 authRouter.patch("/deactivate-self", guard, validate(deactivateSelfSchema), deactivateSelf);

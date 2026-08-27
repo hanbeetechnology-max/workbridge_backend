@@ -1,0 +1,1 @@
+ALTER TABLE withdrawal_requests ADD COLUMN IF NOT EXISTS razorpay_payout_id TEXT;

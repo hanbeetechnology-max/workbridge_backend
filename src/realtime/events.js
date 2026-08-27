@@ -145,8 +145,12 @@ function buildProjectPushCopy(type, payload, project, role) {
       return { title: "Submission reviewed", body: `Your submission on "${title}" was reviewed.`, url };
     case "COMPLETED":
       return { title: "Project completed", body: `"${title}" has been marked complete.`, url };
+    // No push/in-app ping for a received rating — not actionable, and not
+    // in the keep-list (project posted / candidate selected / money /
+    // chat). The rating itself is still written and visible on the
+    // recipient's profile; this only stops it from buzzing a device.
     case "REVIEW_SUBMITTED":
-      return { title: "New review", body: `You received a review on "${title}".`, url };
+      return null;
     case "BUDGET_PROPOSED":
       return { title: "New budget proposal", body: `A new budget was proposed on "${title}".`, url };
     case "BUDGET_RESOLVED":
@@ -283,8 +287,11 @@ export function emitToUser(userId, type, payload = {}) {
 // once, so a staff member watching the inbox sees it land live without a
 // manual refresh. Reuses the same "project:event" channel/shape as
 // everything else real-time in this app, just with SUPPORT_MESSAGE_CREATED
-// as the type. Push only goes to the thread owner — admins work from the
-// live Support tab, not a device notification.
+// as the type. Push only goes to the thread owner, and only when the
+// message wasn't the thread owner's own (payload.senderId) — otherwise a
+// user messaging support got pinged "Support reply" about their own
+// message. Admins never get a push either way — they work from the live
+// Support tab, not a device notification.
 export function emitSupportMessage(thread, payload = {}) {
   const io = getIO();
   const event = { type: "SUPPORT_MESSAGE_CREATED", threadId: thread.id, ...payload };
@@ -293,6 +300,8 @@ export function emitSupportMessage(thread, payload = {}) {
     io.to(userRoom(thread.user_id)).emit("project:event", event);
     io.to(adminRoom()).emit("project:event", event);
   }
+
+  if (thread.user_id === payload.senderId) return;
 
   // No `url` — Settings' Support tab is where a reply is actually read, and
   // there's no dedicated route to deep-link to yet, so this notification is

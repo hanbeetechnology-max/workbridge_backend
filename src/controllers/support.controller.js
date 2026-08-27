@@ -33,7 +33,7 @@ export const sendMyMessage = asyncHandler(async (req, res) => {
     return { thread, created };
   });
 
-  emitSupportMessage(message.thread, { messageId: message.created.id, senderRole: req.user.role });
+  emitSupportMessage(message.thread, { messageId: message.created.id, senderRole: req.user.role, senderId: req.user.id });
 
   res.status(201).json({ data: message.created });
 });
@@ -74,7 +74,7 @@ export const sendAdminMessage = asyncHandler(async (req, res) => {
     return created;
   });
 
-  emitSupportMessage(thread, { messageId: message.id, senderRole: "admin" });
+  emitSupportMessage(thread, { messageId: message.id, senderRole: "admin", senderId: req.user.id });
 
   res.status(201).json({ data: message });
 });

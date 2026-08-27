@@ -35,6 +35,25 @@ export async function update({ projectId, reviewerId, rating, feedback }) {
   return rows[0] ?? null;
 }
 
+// users.rating/reviews_count are a cached aggregate, not derived on read —
+// every write to the reviews table (create above, update below) must call
+// this straight after so the profile header's rating badge never drifts
+// out of sync with the reviews actually backing it. Recomputed from the
+// real rows rather than incrementally adjusted (e.g. "+1 to the count") so
+// it's self-correcting even if a previous write ever missed this call.
+export async function recomputeRatingAggregate(revieweeId) {
+  await query(
+    `UPDATE users u
+     SET rating = sub.avg_rating, reviews_count = sub.cnt
+     FROM (
+       SELECT ROUND(AVG(rating)::numeric, 2) AS avg_rating, COUNT(*) AS cnt
+       FROM reviews WHERE reviewee_id = $1
+     ) sub
+     WHERE u.id = $1`,
+    [revieweeId]
+  );
+}
+
 // Reviews a user has RECEIVED — the trust-page use case (WorkerProfile.jsx's
 // reviews section), same "public trust signal" category as
 // public_user_profiles.rating/reviews_count, so this is a public read too.

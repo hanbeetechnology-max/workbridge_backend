@@ -12,6 +12,8 @@ import * as perkPurchasesRepo from "../repositories/perk_purchases.repository.js
 import { emitProjectEvent, emitBroadcast } from "../realtime/events.js";
 import { calculateLevel } from "../utils/gamification.js";
 import { sendHiredSms } from "../services/sms.service.js";
+import * as razorpayService from "../services/razorpay.service.js";
+import * as cashfreeService from "../services/cashfree.service.js";
 
 // The first real token-earning trigger — MASTER_ECONOMY_PLAN.md's Ledger
 // Tokens (Bridge Tokens) had a column since migration 012 but nothing ever
@@ -25,7 +27,11 @@ const COMPLETION_TOKEN_REWARD = 25;
 const BUSINESS_COMPLETION_XP_REWARD = 30;
 const BUSINESS_COMPLETION_TOKEN_REWARD = 15;
 
-const PLATFORM_FEE_PCT_FALLBACK = 15; // schema.sql's projects.platform_fee_pct default
+// schema.sql's projects.business_fee_pct/worker_fee_pct defaults — the
+// disclosed split that replaced the old flat platform_fee_pct (still on
+// the table for historical rows, no longer read by any code path below).
+const BUSINESS_FEE_PCT_FALLBACK = 8;
+const WORKER_FEE_PCT_FALLBACK = 7;
 
 // GET /api/projects — list projects the caller participates in. "?role=" is
 // optional (defaults to both); a caller can never list someone else's
@@ -188,6 +194,7 @@ export const createProject = asyncHandler(async (req, res) => {
     title: project.title,
     budget: Number(project.budget),
     businessName: joined.business_name,
+    senderId: req.user.id,
   });
 
   // High-value event #1 (see sms.service.js) — only the direct-invite path
@@ -241,7 +248,7 @@ export const updateProjectStatus = asyncHandler(async (req, res) => {
   // The only realtime emit that fires for a WORKER-initiated change (Start
   // Work, Submit Work) — secureFunds/completeProject below are business-
   // only actions with their own emits.
-  emitProjectEvent(updated, "STATUS_CHANGED", { status: toStatus, actorRole: req.user.role, note });
+  emitProjectEvent(updated, "STATUS_CHANGED", { status: toStatus, actorRole: req.user.role, note, senderId: req.user.id });
 
   res.json({ data: updated });
 });
@@ -282,7 +289,8 @@ export const fundEscrow = asyncHandler(async (req, res) => {
       throw ApiError.badRequest(`Cannot fund escrow for a project in status ${project.status} — expected ACCEPTED.`);
     }
 
-    const updatedProject = await projectsRepo.updateStatus(id, "PENDING_FUNDS", client);
+    await projectsRepo.updateStatus(id, "PENDING_FUNDS", client);
+    const updatedProject = await projectsRepo.setManualFundingMethod(client, id);
 
     const request = await escrowFundingRepo.insert(client, {
       projectId: id,
@@ -297,9 +305,85 @@ export const fundEscrow = asyncHandler(async (req, res) => {
 
   // Emitted after commit, never before — the business's own tab already has
   // this via the HTTP response; this nudges the worker's open tab live.
-  emitProjectEvent(result.project, "STATUS_CHANGED", { status: "PENDING_FUNDS", actorRole: "business" });
+  emitProjectEvent(result.project, "STATUS_CHANGED", { status: "PENDING_FUNDS", actorRole: "business", senderId: req.user.id });
 
   res.status(201).json({ data: result });
+});
+
+// POST /api/projects/:id/checkout — ACCEPTED -> PENDING_FUNDS, business-only.
+// Real-gateway counterpart to fundEscrow above (that one stays as the
+// manual bank-transfer fallback). The amount is always server-computed —
+// budget + business_fee_pct — never trusted from the client. Like
+// fundEscrow, this does NOT grant FUNDS_SECURED itself; only the
+// signature-verified webhook (webhook.controller.js) does that, once
+// Razorpay confirms payment.captured — the checkout success callback in
+// the browser is UI-optimistic only and is never trusted on its own.
+export const createCheckoutOrder = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  const project = await projectsRepo.findById(id);
+  if (!project) throw ApiError.notFound("Project not found.");
+  if (project.business_id !== req.user.id) {
+    throw ApiError.forbidden("Only the business on this project can fund it.");
+  }
+
+  // Idempotent retry — a reload or double-click on "Pay" after an order
+  // was already created (but not yet paid) re-fetches a fresh
+  // payment_session_id for that SAME Cashfree order instead of minting a
+  // second one. Still written into the razorpay_order_id column/
+  // funding_method='RAZORPAY' on purpose — reusing the existing generic
+  // "gateway order id" column rather than a schema migration; the label
+  // is stale, the column just stores whichever gateway's order id.
+  if (project.status === "PENDING_FUNDS" && project.funding_method === "RAZORPAY" && project.razorpay_order_id) {
+    const businessFeePct = Number(project.business_fee_pct ?? BUSINESS_FEE_PCT_FALLBACK);
+    const amount = round2(Number(project.budget) * (1 + businessFeePct / 100));
+    const order = await cashfreeService.getOrder(project.razorpay_order_id);
+    res.json({
+      data: {
+        orderId: order.orderId,
+        paymentSessionId: order.paymentSessionId,
+        amount,
+        currency: "INR",
+      },
+    });
+    return;
+  }
+
+  if (project.status !== "ACCEPTED") {
+    throw ApiError.badRequest(`Cannot start checkout for a project in status ${project.status} — expected ACCEPTED.`);
+  }
+
+  const businessFeePct = Number(project.business_fee_pct ?? BUSINESS_FEE_PCT_FALLBACK);
+  const amount = round2(Number(project.budget) * (1 + businessFeePct / 100));
+
+  // Outside any DB lock — this is a network call to Cashfree, and the
+  // convention this file follows (see completeProject/cancelAndRefund
+  // below) is to never hold a FOR UPDATE row lock across one.
+  const order = await cashfreeService.createOrder({
+    amountRupees: amount,
+    receipt: project.id,
+    customer: { id: project.business_id, name: req.user.name, email: req.user.email, phone: req.user.phone },
+    returnUrl: `${process.env.FRONTEND_URL}/invoice?projectId=${project.id}&order_id={order_id}`,
+    notes: { projectId: project.id, businessId: project.business_id },
+  });
+
+  const updatedProject = await transaction(async (client) => {
+    // Re-locked, re-checked here — the unlocked read above only decided
+    // whether to even call Cashfree; this is the actual guard against a
+    // second concurrent checkout attempt winning the race.
+    const locked = await projectsRepo.findByIdForUpdate(client, id);
+    if (!locked || locked.status !== "ACCEPTED") {
+      throw ApiError.badRequest("This project is no longer ready for checkout.");
+    }
+    await projectsRepo.setRazorpayOrder(client, id, { orderId: order.orderId, businessFeePct });
+    return projectsRepo.updateStatus(id, "PENDING_FUNDS", client);
+  });
+
+  emitProjectEvent(updatedProject, "STATUS_CHANGED", { status: "PENDING_FUNDS", actorRole: "business", senderId: req.user.id });
+
+  res.status(201).json({
+    data: { orderId: order.orderId, paymentSessionId: order.paymentSessionId, amount, currency: "INR" },
+  });
 });
 
 // POST /api/projects/:id/request-release — business's "Approve & Release"
@@ -323,7 +407,7 @@ export const requestRelease = asyncHandler(async (req, res) => {
 
   const updated = await projectsRepo.updateStatus(id, "PENDING_RELEASE");
 
-  emitProjectEvent(updated, "STATUS_CHANGED", { status: "PENDING_RELEASE", actorRole: "business" });
+  emitProjectEvent(updated, "STATUS_CHANGED", { status: "PENDING_RELEASE", actorRole: "business", senderId: req.user.id });
 
   res.json({ data: updated });
 });
@@ -339,41 +423,108 @@ export const requestRelease = asyncHandler(async (req, res) => {
 export const completeProject = asyncHandler(async (req, res) => {
   const { id } = req.params;
 
+  if (req.user.role !== "admin") {
+    throw ApiError.forbidden("Only WorkBridge staff can release secured funds.");
+  }
+  // Minimal real Support-tier RBAC — req.user only carries { id, role }
+  // (see guard.js), so the acting admin's own current permission flag is
+  // fetched fresh here, same pattern as admin.controller.js's
+  // assertAdminPermission. See migrations/034_admin_permissions.sql.
+  const actingAdmin = await usersRepo.findById(req.user.id);
+  if (!actingAdmin || actingAdmin.can_release_funds === false) {
+    throw ApiError.forbidden("Your admin account doesn't have fund-release rights — ask a super admin to grant them from Team Access.");
+  }
+
+  const project = await projectsRepo.findById(id);
+  if (!project) throw ApiError.notFound("Project not found.");
+  if (project.status !== "PENDING_RELEASE") {
+    throw ApiError.badRequest(`Cannot complete a project in status ${project.status} — expected PENDING_RELEASE.`);
+  }
+
+  // Compute payout — NUMERIC columns come back as strings from pg by
+  // default; Number() here, then round to paise/cents in real money math
+  // (a real implementation should use a decimal library, not floats —
+  // flagged here rather than silently done wrong).
+  const budget = Number(project.budget);
+  const workerFeePct = Number(project.worker_fee_pct ?? WORKER_FEE_PCT_FALLBACK);
+  const fee = round2(budget * (workerFeePct / 100));
+  const earnings = round2(budget - fee);
+
+  // Real Route transfer, attempted OUTSIDE any DB lock — a network call to
+  // Razorpay has no business holding a FOR UPDATE row open across it.
+  // Eligible only if this project was actually funded through real
+  // Checkout (razorpay_payment_id — a manually-funded project never has
+  // one) and the worker has a fully verified payout destination.
+  const worker = await usersRepo.findById(project.worker_id);
+  const routeEligible = Boolean(
+    project.razorpay_payment_id && worker?.razorpay_account_id && worker.razorpay_account_status === "ACTIVE"
+  );
+
+  let settlementMethod = "WALLET";
+  let transferId = null;
+  let payoutId = null;
+  if (routeEligible) {
+    try {
+      const transfer = await razorpayService.createTransfer({
+        paymentId: project.razorpay_payment_id,
+        accountId: worker.razorpay_account_id,
+        amountPaise: Math.round(earnings * 100),
+        notes: { projectId: project.id, kind: "payout" },
+        idempotencyKey: `${project.id}:payout`,
+      });
+      transferId = transfer?.transfers?.[0]?.id ?? transfer?.id ?? null;
+      settlementMethod = "RAZORPAY_ROUTE_AUTO";
+    } catch (err) {
+      // The transfer call failing must never block completion — the
+      // worker still gets paid, just into their in-app wallet for now,
+      // with a durable log entry so staff can follow up (retry once the
+      // underlying issue — expired KYC, a Razorpay-side outage — clears).
+      settlementMethod = "WALLET_PENDING_MANUAL";
+      console.error(`[razorpay] Route transfer failed for project ${project.id}:`, err);
+    }
+  } else if (worker?.payout_method && worker?.payout_details) {
+    // Route stays blocked pending RBI review (routeEligible above is
+    // effectively always false today), so this is the real payout path: a
+    // direct RazorpayX payout to the worker's saved bank/UPI destination,
+    // from WorkBridge's own already-settled Razorpay balance — the
+    // "Separate Collection and Payout" architecture the RBI research
+    // confirmed doesn't need the Route turnover/transparency review.
+    try {
+      const payout = await cashfreeService.createCashfreePayout({
+        requestId: `${project.id}:payout`,
+        amountRupees: earnings,
+        payoutMethod: worker.payout_method,
+        payoutDetails: worker.payout_details,
+        worker,
+      });
+      payoutId = payout?.id ?? null;
+      settlementMethod = "RAZORPAYX_PAYOUT";
+    } catch (err) {
+      settlementMethod = "WALLET_PENDING_MANUAL";
+      console.error(`[cashfree] Payout failed for project ${project.id}:`, err);
+    }
+  }
+
   const result = await transaction(async (client) => {
     // FOR UPDATE — locks the row so two concurrent completion attempts on
-    // the same project can't both succeed.
-    const project = await projectsRepo.findByIdForUpdate(client, id);
-    if (!project) throw ApiError.notFound("Project not found.");
-
-    if (req.user.role !== "admin") {
-      throw ApiError.forbidden("Only WorkBridge staff can release secured funds.");
-    }
-    // Minimal real Support-tier RBAC — req.user only carries { id, role }
-    // (see guard.js), so the acting admin's own current permission flag is
-    // fetched fresh here, same pattern as admin.controller.js's
-    // assertAdminPermission. See migrations/034_admin_permissions.sql.
-    const actingAdmin = await usersRepo.findById(req.user.id);
-    if (!actingAdmin || actingAdmin.can_release_funds === false) {
-      throw ApiError.forbidden("Your admin account doesn't have fund-release rights — ask a super admin to grant them from Team Access.");
-    }
-    if (project.status !== "PENDING_RELEASE") {
-      throw ApiError.badRequest(`Cannot complete a project in status ${project.status} — expected PENDING_RELEASE.`);
+    // the same project can't both succeed. Re-checked here, not just
+    // trusted from the unlocked read above — this is the real guard
+    // against a race.
+    const locked = await projectsRepo.findByIdForUpdate(client, id);
+    if (!locked) throw ApiError.notFound("Project not found.");
+    if (locked.status !== "PENDING_RELEASE") {
+      throw ApiError.badRequest(`Cannot complete a project in status ${locked.status} — expected PENDING_RELEASE.`);
     }
 
     // a. Update project status
     const updatedProject = await projectsRepo.updateStatus(id, "COMPLETED", client);
-
-    // Compute payout — NUMERIC columns come back as strings from pg by
-    // default; Number() here, then round to paise/cents in real money math
-    // (a real implementation should use a decimal library, not floats —
-    // flagged here rather than silently done wrong).
-    const budget = Number(project.budget);
-    const feePct = Number(project.platform_fee_pct ?? PLATFORM_FEE_PCT_FALLBACK);
-    const fee = round2(budget * (feePct / 100));
-    const earnings = round2(budget - fee);
+    if (transferId) await projectsRepo.setRazorpayTransfer(client, id, transferId);
 
     // b. Insert into the transactions ledger — one row per money movement,
     // not one row with a net amount, so the fee is independently auditable.
+    // payoutId (a RazorpayX pout_XXX id) has no dedicated project column
+    // like transferId does — folded into referenceNote instead, since it's
+    // audit context, not something any other code path looks up by.
     const payoutTxn = await transactionsRepo.insert(
       {
         projectId: id,
@@ -383,7 +534,8 @@ export const completeProject = asyncHandler(async (req, res) => {
         direction: "credit",
         amount: earnings,
         fundsStatus: "RELEASED",
-        referenceNote: `Payment released – ${project.title}`,
+        referenceNote: payoutId ? `Payment released via RazorpayX (${payoutId}) – ${project.title}` : `Payment released – ${project.title}`,
+        settlementMethod,
       },
       client
     );
@@ -395,13 +547,18 @@ export const completeProject = asyncHandler(async (req, res) => {
         type: "PLATFORM_FEE",
         direction: "debit",
         amount: fee,
-        referenceNote: `Platform fee – ${project.title}`,
+        referenceNote: `Platform fee (${workerFeePct}%) – ${project.title}`,
       },
       client
     );
 
-    // c. Update the worker's wallet balance
-    await usersRepo.incrementWalletBalance(client, project.worker_id, earnings);
+    // c. Update the worker's wallet balance — skipped when the money
+    // already left for the worker's real bank via Route or a direct
+    // RazorpayX payout; crediting the in-app wallet too would double-count
+    // spendable money.
+    if (settlementMethod !== "RAZORPAY_ROUTE_AUTO" && settlementMethod !== "RAZORPAYX_PAYOUT") {
+      await usersRepo.incrementWalletBalance(client, project.worker_id, earnings);
+    }
 
     // d. MASTER_ECONOMY_PLAN.md's Core Loop — award completion XP inside
     // this same transaction, so a failed payout can never leave XP awarded
@@ -453,7 +610,7 @@ export const completeProject = asyncHandler(async (req, res) => {
       tokenDelta: BUSINESS_COMPLETION_TOKEN_REWARD,
     });
 
-    return { project: updatedProject, payout: payoutTxn, earnings, fee, leveledUp, newLevel, newXp };
+    return { project: updatedProject, payout: payoutTxn, earnings, fee, leveledUp, newLevel, newXp, settlementMethod };
   });
   // ^ transaction() commits here if we reached this line, or has already
   // rolled back and re-thrown if anything above threw.
@@ -476,6 +633,7 @@ export const completeProject = asyncHandler(async (req, res) => {
     workerTokenDelta: COMPLETION_TOKEN_REWARD,
     businessXpDelta: BUSINESS_COMPLETION_XP_REWARD,
     businessTokenDelta: BUSINESS_COMPLETION_TOKEN_REWARD,
+    senderId: req.user.id,
   });
 
   res.json({ data: result });
@@ -562,23 +720,57 @@ export const cancelAndRefund = asyncHandler(async (req, res) => {
     throw ApiError.forbidden("This project is protected by the worker's Momentum Shield — it can't be cancelled right now.");
   }
 
-  const result = await transaction(async (client) => {
-    const project = await projectsRepo.findByIdForUpdate(client, id);
-    if (!project) throw ApiError.notFound("Project not found.");
+  const project = await projectsRepo.findById(id);
+  if (!project) throw ApiError.notFound("Project not found.");
 
-    if (project.business_id !== req.user.id) {
-      throw ApiError.forbidden("Only the business on this project can cancel and refund it.");
-    }
-    if (!["FUNDS_SECURED", "WORK_IN_PROGRESS"].includes(project.status)) {
+  if (project.business_id !== req.user.id) {
+    throw ApiError.forbidden("Only the business on this project can cancel and refund it.");
+  }
+  if (!["FUNDS_SECURED", "WORK_IN_PROGRESS"].includes(project.status)) {
+    throw ApiError.badRequest(
+      `Cannot cancel & refund a project in status ${project.status} — expected FUNDS_SECURED or WORK_IN_PROGRESS.`
+    );
+  }
+  if (!project.deadline || new Date(project.deadline) > new Date()) {
+    throw ApiError.badRequest("Cannot cancel & refund before the delivery deadline has passed.");
+  }
+
+  // Real refund, attempted OUTSIDE any DB lock — same reasoning as
+  // completeProject's payout call above. Budget-only: the 8% business fee
+  // is retained as WorkBridge's non-refundable facilitation fee on a
+  // cancelled project (Terms & Conditions §6). No razorpay_order_id means
+  // this project was funded through the manual bank-transfer fallback —
+  // ledger-only, exactly as before this integration existed. Cashfree's
+  // refund API is order-scoped (not payment-scoped like Razorpay's was),
+  // so this keys off razorpay_order_id (the reused column — see
+  // cashfree.service.js) rather than razorpay_payment_id.
+  let refundId = null;
+  if (project.razorpay_order_id) {
+    // Cashfree's refund_id only allows alphanumeric/underscore/hyphen/dot —
+    // no colon, unlike the transfer_id convention used elsewhere.
+    const refund = await cashfreeService.createRefund({
+      orderId: project.razorpay_order_id,
+      refundId: `${project.id}_refund`,
+      amountRupees: Number(project.budget),
+      note: "cancel_refund",
+    });
+    refundId = refund?.refund_id ?? null;
+  }
+
+  const result = await transaction(async (client) => {
+    // Re-locked, re-checked — the unlocked read above only decided
+    // whether/how much to refund via Razorpay; this is the real guard
+    // against a race (e.g. the project completing normally in between).
+    const locked = await projectsRepo.findByIdForUpdate(client, id);
+    if (!locked) throw ApiError.notFound("Project not found.");
+    if (!["FUNDS_SECURED", "WORK_IN_PROGRESS"].includes(locked.status)) {
       throw ApiError.badRequest(
-        `Cannot cancel & refund a project in status ${project.status} — expected FUNDS_SECURED or WORK_IN_PROGRESS.`
+        `Cannot cancel & refund a project in status ${locked.status} — expected FUNDS_SECURED or WORK_IN_PROGRESS.`
       );
-    }
-    if (!project.deadline || new Date(project.deadline) > new Date()) {
-      throw ApiError.badRequest("Cannot cancel & refund before the delivery deadline has passed.");
     }
 
     const updatedProject = await projectsRepo.updateStatus(id, "CANCELLED", client);
+    if (refundId) await projectsRepo.setRazorpayRefund(client, id, refundId);
 
     const refundTxn = await transactionsRepo.insert(
       {
@@ -597,7 +789,7 @@ export const cancelAndRefund = asyncHandler(async (req, res) => {
     return { project: updatedProject, transaction: refundTxn };
   });
 
-  emitProjectEvent(result.project, "STATUS_CHANGED", { status: "CANCELLED", actorRole: "business", note: "Deadline missed — refunded" });
+  emitProjectEvent(result.project, "STATUS_CHANGED", { status: "CANCELLED", actorRole: "business", note: "Deadline missed — refunded", senderId: req.user.id });
 
   res.json({ data: result });
 });

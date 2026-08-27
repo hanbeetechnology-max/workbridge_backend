@@ -25,9 +25,10 @@ CREATE TYPE project_status AS ENUM (
 );
 
 CREATE TYPE transaction_type AS ENUM (
-  'FUNDS_SECURED',  -- business's payment moves into holding
-  'PLATFORM_FEE',   -- WorkBridge's cut, deducted at payout
-  'PAYOUT',         -- worker's earnings released to their wallet
+  'FUNDS_SECURED',          -- business's payment moves into holding
+  'PLATFORM_FEE',           -- WorkBridge's cut withheld from the worker's payout (7%)
+  'PLATFORM_FEE_BUSINESS',  -- WorkBridge's cut collected from the business at checkout (8%)
+  'PAYOUT',                 -- worker's earnings released to their wallet or bank
   'WITHDRAWAL',      -- worker cashes out of WorkBridge to their bank/UPI
   'REFUND'
 );
@@ -38,6 +39,20 @@ CREATE TYPE transaction_direction AS ENUM ('credit', 'debit');
 -- uses "escrow" (funds/secured/protection instead); kept consistent here
 -- even though this is an internal schema term, not user-facing text.
 CREATE TYPE funds_status AS ENUM ('HELD', 'RELEASED', 'REFUNDED');
+
+-- Razorpay Route linked-account state for a worker's payout destination —
+-- see migrations/040_razorpay_route.sql.
+CREATE TYPE razorpay_account_status AS ENUM
+  ('NOT_LINKED', 'PENDING', 'ACTIVE', 'NEEDS_CLARIFICATION', 'REJECTED');
+
+-- Manual pay-per-period subscriptions (not recurring auto-charge — see
+-- migrations/041_subscription_payments.sql). GROWTH/ENTERPRISE are
+-- business tiers, PRO/ELITE are worker tiers; one enum covers both since a
+-- payment row is scoped to one user whose role already determines which
+-- subset is valid (enforced in payments.controller.js, not the DB).
+CREATE TYPE subscription_tier AS ENUM ('FREE', 'GROWTH', 'ENTERPRISE', 'PRO', 'ELITE');
+CREATE TYPE subscription_billing_period AS ENUM ('MONTHLY', 'YEARLY');
+CREATE TYPE subscription_payment_status AS ENUM ('PENDING', 'PAID', 'FAILED');
 
 -- A job post's minimum qualification level — paired with education_notes
 -- (free text like "Computer Science or equivalent") since real education
@@ -118,6 +133,18 @@ CREATE TABLE users (
   -- Per-category push notification preferences (Settings > Notifications).
   -- See migrations/039_notification_prefs.sql.
   notification_prefs JSONB NOT NULL DEFAULT '{"chat": true, "projects": true, "payments": true}'::jsonb,
+  -- Razorpay Route linked account — a worker's payout destination. Only
+  -- the acc_XXXX id/status/email are ever stored; raw bank details go
+  -- straight to Razorpay and are never persisted here. See
+  -- migrations/040_razorpay_route.sql.
+  razorpay_account_id     TEXT UNIQUE,
+  razorpay_account_status razorpay_account_status NOT NULL DEFAULT 'NOT_LINKED',
+  razorpay_account_email  TEXT,
+  razorpay_linked_at      TIMESTAMPTZ,
+  -- Cached current-plan lookup for the manual pay-per-period subscription
+  -- flow — see migrations/041_subscription_payments.sql.
+  subscription_tier       subscription_tier NOT NULL DEFAULT 'FREE',
+  subscription_expires_at TIMESTAMPTZ,
   -- Minimal real Support-tier RBAC — meaningless for worker/business rows,
   -- only ever checked when role = 'admin'. Defaults TRUE so every admin
   -- account keeps the full access it already had; a super admin dials an
@@ -249,7 +276,20 @@ CREATE TABLE projects (
   title             TEXT NOT NULL,
   description       TEXT,
   budget            NUMERIC(12, 2) NOT NULL CHECK (budget > 0),
+  -- Deprecated in favor of business_fee_pct/worker_fee_pct below — kept,
+  -- untouched, only for historical rows created before the disclosed
+  -- split; no code path reads it anymore. See migrations/040_razorpay_route.sql.
   platform_fee_pct  NUMERIC(5, 2) NOT NULL DEFAULT 15.00,
+  -- The disclosed split: business pays budget+business_fee_pct at
+  -- checkout, worker receives budget-worker_fee_pct at payout.
+  business_fee_pct  NUMERIC(5, 2) NOT NULL DEFAULT 8.00,
+  worker_fee_pct    NUMERIC(5, 2) NOT NULL DEFAULT 7.00,
+  funding_method    TEXT NOT NULL DEFAULT 'RAZORPAY'
+    CHECK (funding_method IN ('RAZORPAY', 'MANUAL_BANK_TRANSFER')),
+  razorpay_order_id     TEXT UNIQUE,
+  razorpay_payment_id   TEXT,
+  razorpay_transfer_id  TEXT,
+  razorpay_refund_id    TEXT,
   status            project_status NOT NULL DEFAULT 'INVITED',
   deadline          DATE,
   -- Distinct from `deadline` above (the DELIVERY date) — application_deadline
@@ -355,6 +395,14 @@ CREATE TABLE transactions (
   currency          CHAR(3) NOT NULL DEFAULT 'INR',
   funds_status      funds_status,
   reference_note    TEXT,
+  -- Distinguishes a worker's real bank payout (Route transfer) from an
+  -- in-app wallet credit awaiting manual withdrawal — completeProject
+  -- picks between them per-project. See migrations/040_razorpay_route.sql.
+  -- RAZORPAYX_PAYOUT — a direct RazorpayX payout to the worker's saved
+  -- bank/UPI details (see users.payout_method/payout_details above),
+  -- distinct from RAZORPAY_ROUTE_AUTO. See migrations/044_worker_payout_account.sql.
+  settlement_method TEXT NOT NULL DEFAULT 'WALLET'
+    CHECK (settlement_method IN ('WALLET', 'RAZORPAY_ROUTE_AUTO', 'WALLET_PENDING_MANUAL', 'RAZORPAYX_PAYOUT')),
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
 
@@ -381,6 +429,14 @@ CREATE TRIGGER trg_transactions_updated_at
 
 CREATE TYPE withdrawal_status AS ENUM ('PENDING', 'APPROVED', 'REJECTED');
 CREATE TYPE payout_method AS ENUM ('UPI', 'BANK_TRANSFER');
+
+-- A worker's saved default payout destination — added after this enum
+-- since users is created above, before payout_method exists. Lets
+-- completeProject/resolveDispute pay a worker directly via RazorpayX at
+-- completion without the (still RBI-blocked) Route linked-account flow.
+-- See migrations/044_worker_payout_account.sql.
+ALTER TABLE users ADD COLUMN payout_method payout_method;
+ALTER TABLE users ADD COLUMN payout_details TEXT;
 
 CREATE TABLE withdrawal_requests (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -860,6 +916,43 @@ CREATE TABLE profile_audit_requests (
 
 CREATE INDEX idx_profile_audit_requests_status ON profile_audit_requests (status, created_at);
 CREATE INDEX idx_profile_audit_requests_worker ON profile_audit_requests (worker_id, created_at DESC);
+
+-- Idempotency + audit trail for incoming Razorpay webhook deliveries —
+-- Razorpay retries aggressively on anything but a fast 200, and the same
+-- event can arrive more than once; razorpay_event_id is the dedupe key.
+-- See migrations/040_razorpay_route.sql.
+CREATE TABLE razorpay_webhook_events (
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  razorpay_event_id TEXT NOT NULL UNIQUE,
+  event_type        TEXT NOT NULL,
+  payload           JSONB NOT NULL,
+  processed_at      TIMESTAMPTZ,
+  processing_error  TEXT,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_razorpay_webhook_events_type ON razorpay_webhook_events (event_type, created_at DESC);
+
+-- Manual pay-per-period subscription payments — a plain one-time Razorpay
+-- Checkout charge per billing period, NOT a recurring auto-charge (that
+-- would need a UPI Autopay/NACH e-mandate, a separate regulated flow).
+-- See migrations/041_subscription_payments.sql.
+CREATE TABLE subscription_payments (
+  id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id             UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  tier                subscription_tier NOT NULL,
+  billing_period      subscription_billing_period NOT NULL,
+  amount              NUMERIC(12, 2) NOT NULL CHECK (amount > 0),
+  razorpay_order_id   TEXT UNIQUE,
+  razorpay_payment_id TEXT,
+  status              subscription_payment_status NOT NULL DEFAULT 'PENDING',
+  period_start        TIMESTAMPTZ,
+  period_end          TIMESTAMPTZ,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_subscription_payments_user ON subscription_payments (user_id, created_at DESC);
 
 -- ─── Design notes ───────────────────────────────────────────────────────────
 --

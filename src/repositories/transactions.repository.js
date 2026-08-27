@@ -1,14 +1,14 @@
 import { query } from "../db/client.js";
 
 export async function insert(
-  { projectId, workerId, businessId, type, direction, amount, fundsStatus, referenceNote },
+  { projectId, workerId, businessId, type, direction, amount, fundsStatus, referenceNote, settlementMethod },
   client = { query }
 ) {
   const { rows } = await client.query(
-    `INSERT INTO transactions (project_id, worker_id, business_id, type, direction, amount, funds_status, reference_note)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `INSERT INTO transactions (project_id, worker_id, business_id, type, direction, amount, funds_status, reference_note, settlement_method)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, 'WALLET'))
      RETURNING *`,
-    [projectId, workerId, businessId, type, direction, amount, fundsStatus ?? null, referenceNote ?? null]
+    [projectId, workerId, businessId, type, direction, amount, fundsStatus ?? null, referenceNote ?? null, settlementMethod ?? null]
   );
   return rows[0];
 }

@@ -2,6 +2,9 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import { apiRouter } from "./routes/index.js";
+import { webhookRouter } from "./routes/webhook.routes.js";
+import { cashfreeWebhookRouter } from "./routes/cashfreeWebhook.routes.js";
+import { cashfreePayoutWebhookRouter } from "./routes/cashfreePayoutWebhook.routes.js";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 import { apiLimiter } from "./middleware/rateLimit.js";
 
@@ -64,6 +67,31 @@ export function isAllowedOrigin(origin) {
 }
 
 app.use(cors({ origin: (origin, callback) => callback(null, isAllowedOrigin(origin)) }));
+
+// Mounted directly on `app`, BEFORE the global express.json() below, and
+// completely outside apiRouter/guard — Razorpay calls this server-to-
+// server with no JWT, only its own X-Razorpay-Signature HMAC (verified in
+// webhook.controller.js against these exact raw bytes). If this sat under
+// apiRouter like every other route, the global JSON parser would already
+// have consumed and re-serialized the body by the time the handler saw
+// it, and a JSON.stringify of the parsed body is not guaranteed to match
+// the exact bytes Razorpay signed — signature verification would be
+// unreliable. express.raw() here is scoped to this one path only; every
+// other route still gets a normal parsed JSON body via the line below.
+app.use("/api/payments/webhook", express.raw({ type: "application/json" }), webhookRouter);
+
+// Same raw-body-before-json shape as the Razorpay webhook above, ahead of
+// real Cashfree Payouts credentials existing — see
+// cashfreeWebhook.controller.js for what this does and doesn't do yet.
+app.use("/api/webhooks/cashfree", express.raw({ type: "application/json" }), cashfreeWebhookRouter);
+
+// Separate Payouts webhook — captures the raw body regardless of content
+// type (`type: () => true`, not scoped to "application/json" like the two
+// above) since whether Cashfree Payouts sends JSON or form-encoded POST
+// params for this isn't confirmed yet — see cashfreePayoutWebhook.
+// controller.js.
+app.use("/api/webhooks/cashfree-payouts", express.raw({ type: () => true }), cashfreePayoutWebhookRouter);
+
 // Default express.json() limit is 100kb — too small for the data-URL image
 // uploads this app accepts (avatar photos, submission images, both base64
 // text in the JSON body). 12mb comfortably covers an 8MB image's ~33% base64
