@@ -5,6 +5,42 @@ export async function findById(id) {
   return rows[0] ?? null;
 }
 
+// The real Team Access roster (AdminTeamTab.jsx) — every admin account,
+// active or deactivated (staff need to see who's been removed, not just
+// who's currently active). Ordered newest-first, same convention as
+// listAllUsers.
+export async function listAdmins() {
+  const { rows } = await query(
+    `SELECT id, name, email, phone, can_ban_users, can_release_funds, is_active, created_at
+     FROM users WHERE role = 'admin' ORDER BY created_at DESC`
+  );
+  return rows;
+}
+
+export async function insertAdmin(client, { name, email, passwordHash, phone, canBanUsers, canReleaseFunds }) {
+  const { rows } = await client.query(
+    `INSERT INTO users (role, name, email, password_hash, phone, can_ban_users, can_release_funds)
+     VALUES ('admin', $1, $2, $3, $4, $5, $6)
+     RETURNING id, name, email, phone, can_ban_users, can_release_funds, is_active, created_at`,
+    [name, email, passwordHash, phone ?? null, canBanUsers, canReleaseFunds]
+  );
+  return rows[0];
+}
+
+// Same is_active mechanism Security Monitor's "Ban User" already uses for
+// worker/business accounts (auth.controller.js's login checks it) — an
+// admin "removed" from the roster just can't log in anymore, reversible by
+// direct DB access if that's ever needed, not a hard delete that would
+// orphan their platform_logs/resolved-disputes history.
+export async function setAdminActive(client, id, isActive) {
+  const { rows } = await client.query(
+    `UPDATE users SET is_active = $2 WHERE id = $1 AND role = 'admin'
+     RETURNING id, name, email, phone, can_ban_users, can_release_funds, is_active, created_at`,
+    [id, isActive]
+  );
+  return rows[0] ?? null;
+}
+
 // CITEXT on users.email makes this comparison case-insensitive at the DB
 // level already — no need to lower() here.
 export async function findByEmail(email) {
@@ -129,12 +165,19 @@ export async function adjustBehaviorScore(client, id, delta) {
 // signup is only ever created there, once the OTP check already succeeded
 // (see pending_signups / auth.controller.js), so it's always verified from
 // the moment it exists.
-export async function create({ role, name, email, phone, passwordHash, emailVerified = true, googleId = null, avatarUrl = null, hasUsablePassword = true }) {
+// canBanUsers/canReleaseFunds only ever matter for role: "admin" — every
+// other role ignores them (no such columns are meaningful). Left undefined
+// (not false) for worker/business/CLI-provisioned admins so the schema's
+// own DEFAULT TRUE still applies; only self-registered admins
+// (auth.controller.js's registerAdmin/verifyOtp) explicitly pass false —
+// "Tier 1, zero real power until a Super Admin promotes them" is a property
+// of THAT signup path, not of the admin role in general.
+export async function create({ role, name, email, phone, passwordHash, emailVerified = true, googleId = null, avatarUrl = null, hasUsablePassword = true, canBanUsers = true, canReleaseFunds = true }) {
   const { rows } = await query(
-    `INSERT INTO users (role, name, email, phone, password_hash, email_verified, google_id, avatar_url, has_usable_password)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    `INSERT INTO users (role, name, email, phone, password_hash, email_verified, google_id, avatar_url, has_usable_password, can_ban_users, can_release_funds)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING *`,
-    [role, name, email, phone ?? null, passwordHash, emailVerified, googleId, avatarUrl, hasUsablePassword]
+    [role, name, email, phone ?? null, passwordHash, emailVerified, googleId, avatarUrl, hasUsablePassword, canBanUsers, canReleaseFunds]
   );
   return rows[0];
 }

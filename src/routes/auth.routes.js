@@ -4,6 +4,7 @@ import { validate } from "../middleware/validate.js";
 import { authLimiter } from "../middleware/rateLimit.js";
 import {
   registerSchema,
+  registerAdminSchema,
   loginSchema,
   googleAuthSchema,
   verifyOtpSchema,
@@ -16,6 +17,7 @@ import {
 } from "../validators/auth.validators.js";
 import {
   register,
+  registerAdmin,
   login,
   googleAuth,
   verifyOtp,
@@ -36,13 +38,16 @@ export const authRouter = Router();
 // that a real user fumbling their password a few times never hits it.
 // Not applied to /google or /me — those aren't guessable-secret endpoints.
 authRouter.use(
-  ["/register", "/verify-otp", "/resend-otp", "/login", "/forgot-password", "/reset-password"],
+  ["/register", "/register-admin", "/verify-otp", "/resend-otp", "/login", "/forgot-password", "/reset-password"],
   authLimiter
 );
 
 // OTP only ever happens once, at registration, to verify the email address —
 // sign-in is password-only (see login()'s email_verified guard).
 authRouter.post("/register", validate(registerSchema), register);
+// Deliberately not linked from anywhere in the public UI — see
+// registerAdmin's own comment in auth.controller.js.
+authRouter.post("/register-admin", validate(registerAdminSchema), registerAdmin);
 authRouter.post("/verify-otp", validate(verifyOtpSchema), verifyOtp);
 authRouter.post("/resend-otp", validate(resendOtpSchema), resendOtp);
 authRouter.post("/login", validate(loginSchema), login);

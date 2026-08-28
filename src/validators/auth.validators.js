@@ -1,12 +1,23 @@
 import { z } from "zod";
 
 // Deliberately excludes "admin" — public registration can never create an
-// admin account.
+// admin account. registerAdminSchema below is the one deliberate exception,
+// on its own dedicated, unlinked route — see auth.controller.js's
+// registerAdmin.
 export const registerSchema = z.object({
   role: z.enum(["worker", "business"]),
   name: z.string().trim().min(2).max(200),
   email: z.string().trim().toLowerCase().email(),
   phone: z.string().regex(/^\d{10}$/, "Enter exactly 10 numeric digits").optional(),
+  password: z.string().min(8, "Password must be at least 8 characters"),
+});
+
+// No `role` field — registerAdmin hardcodes "admin" server-side, never
+// trusted from the client, same as every other role-sensitive endpoint in
+// this file.
+export const registerAdminSchema = z.object({
+  name: z.string().trim().min(2).max(200),
+  email: z.string().trim().toLowerCase().email(),
   password: z.string().min(8, "Password must be at least 8 characters"),
 });
 

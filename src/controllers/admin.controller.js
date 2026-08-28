@@ -1,4 +1,5 @@
 import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
 import { transaction } from "../db/client.js";
 import { ApiError } from "../utils/ApiError.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
@@ -897,6 +898,110 @@ export const updateAdminPermissions = asyncHandler(async (req, res) => {
       targetUserId: target.id,
       targetProjectId: null,
       notes: `Updated permissions for ${target.name} — can_ban_users: ${updated.can_ban_users}, can_release_funds: ${updated.can_release_funds}.`,
+    });
+    return updated;
+  });
+
+  res.json({ data: result });
+});
+
+// GET /api/admin/team — the real Team Access roster. Previously
+// AdminTeamTab.jsx never called any endpoint at all — every admin here (add,
+// remove, permissions) was local-only mock state with a toast claiming
+// success. Permissions already had a real endpoint (updateAdminPermissions
+// above); this + addTeamMember/removeTeamMember below are what makes the
+// rest of that screen real too.
+export const listTeam = asyncHandler(async (_req, res) => {
+  const data = await usersRepo.listAdmins();
+  res.json({ data });
+});
+
+// A "Super Admin" in the UI is just the full-permission state
+// (can_ban_users && can_release_funds both true, the default for every new
+// admin) — there's no separate role value for it in the DB.
+function isSuperAdmin(user) {
+  return Boolean(user?.can_ban_users && user?.can_release_funds);
+}
+
+// POST /api/admin/team — body: { name, email, password, canBanUsers?,
+// canReleaseFunds? }. Only a full admin (super admin) can provision another
+// admin account — same gate updateAdminPermissions already uses, so someone
+// dialed down to a Support-tier subset can't create fresh full-access
+// accounts for themselves. Reuses create-admin.js's own validation/insert
+// shape (the CLI script stays as the zero-dependency bootstrap path for
+// standing up the very first admin; this is the real one for every admin
+// after that).
+export const addTeamMember = asyncHandler(async (req, res) => {
+  const actingAdmin = await usersRepo.findById(req.user.id);
+  if (!isSuperAdmin(actingAdmin)) {
+    throw ApiError.forbidden("Only a Super Admin can add a new team member.");
+  }
+
+  const { name, email, password, phone, canBanUsers = true, canReleaseFunds = true } = req.body ?? {};
+  if (!name || !String(name).trim()) throw ApiError.badRequest("Name is required.");
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) throw ApiError.badRequest("A valid email is required.");
+  if (!password || String(password).length < 8) throw ApiError.badRequest("Password must be at least 8 characters.");
+
+  const existing = await usersRepo.findByEmail(email);
+  if (existing) throw ApiError.badRequest(`An account with email ${email} already exists.`);
+
+  const passwordHash = await bcrypt.hash(password, 10);
+  const result = await transaction(async (client) => {
+    const created = await usersRepo.insertAdmin(client, {
+      name: String(name).trim(),
+      email,
+      passwordHash,
+      phone,
+      canBanUsers: Boolean(canBanUsers),
+      canReleaseFunds: Boolean(canReleaseFunds),
+    });
+    await adminRepo.insertPlatformLog(client, {
+      adminId: req.user.id,
+      action: "ADMIN_ADDED",
+      targetUserId: created.id,
+      targetProjectId: null,
+      notes: `Added ${created.name} <${created.email}> to the admin team${isSuperAdmin(created) ? " as a Super Admin" : ""}.`,
+    });
+    return created;
+  });
+
+  res.status(201).json({ data: result });
+});
+
+// DELETE /api/admin/team/:id — deactivates an admin account (same
+// users.is_active mechanism Security Monitor's Ban User uses — reversible
+// by direct DB access, not a hard delete that would orphan their
+// platform_logs/resolved-disputes history). Three real guards: only a Super
+// Admin can remove anyone; a Super Admin can never remove another Super
+// Admin (per product decision — one full-access admin going rogue or
+// getting phished can't unilaterally take out the rest of the team; that
+// needs a deliberate permissions dial-down first via updateAdminPermissions,
+// which itself requires the target to no longer be full-access); and nobody
+// can remove themselves (use Settings, not this).
+export const removeTeamMember = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const actingAdmin = await usersRepo.findById(req.user.id);
+  if (!isSuperAdmin(actingAdmin)) {
+    throw ApiError.forbidden("Only a Super Admin can remove a team member.");
+  }
+  if (id === req.user.id) {
+    throw ApiError.badRequest("You can't remove your own account.");
+  }
+
+  const target = await usersRepo.findById(id);
+  if (!target || target.role !== "admin") throw ApiError.notFound("Admin not found.");
+  if (isSuperAdmin(target)) {
+    throw ApiError.forbidden("A Super Admin can't remove another Super Admin — dial down their permissions first.");
+  }
+
+  const result = await transaction(async (client) => {
+    const updated = await usersRepo.setAdminActive(client, id, false);
+    await adminRepo.insertPlatformLog(client, {
+      adminId: req.user.id,
+      action: "ADMIN_REMOVED",
+      targetUserId: id,
+      targetProjectId: null,
+      notes: `Removed ${target.name} <${target.email}> from the admin team.`,
     });
     return updated;
   });

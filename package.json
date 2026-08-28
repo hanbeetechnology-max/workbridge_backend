@@ -26,6 +26,7 @@
     "migrate:dispute-raise": "node scripts/migrate-046-dispute-raise.js",
     "migrate:manual-payout-tracking": "node scripts/migrate-047-manual-payout-tracking.js",
     "migrate:dispute-rebuttal-evidence": "node scripts/migrate-048-dispute-rebuttal-evidence.js",
+    "migrate:admin-team-management": "node scripts/migrate-049-admin-team-management.js",
     "test": "node --test"
   },
   "dependencies": {

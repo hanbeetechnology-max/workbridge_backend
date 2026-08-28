@@ -114,6 +114,54 @@ export const register = asyncHandler(async (req, res) => {
   });
 });
 
+// POST /api/auth/register-admin — public, but deliberately not linked from
+// anywhere in the app (no button on /auth or /admin-login points here —
+// see AuthPage.jsx/the standalone AdminSignupPage). Same OTP-verified
+// pending-signup flow as register() above, hardcoded to role: "admin"
+// server-side (never trusted from the client, same as every other
+// role-sensitive write in this file) — the one deliberate exception to
+// registerSchema's "public registration can never create an admin account"
+// comment. verifyOtp below gives every admin created this way zero real
+// permissions (can_ban_users/can_release_funds both false) regardless of
+// what a CLI-provisioned admin defaults to — a Super Admin has to
+// deliberately promote them via PATCH /api/admin/users/:id/permissions
+// before they can do anything real.
+export const registerAdmin = asyncHandler(async (req, res) => {
+  const { name, email, password } = req.body;
+  await assertSignupAvailable({ email });
+
+  const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+  const otpCode = generateOtpCode();
+  const expiresAt = new Date(Date.now() + OTP_TTL_MINUTES * 60 * 1000).toISOString();
+
+  await authRepo.deletePendingSignup(email);
+  await authRepo.createPendingSignup({
+    email,
+    role: "admin",
+    name,
+    phone: undefined,
+    passwordHash,
+    otpCode: hashOtp(email, "admin", otpCode),
+    expiresAt,
+  });
+
+  try {
+    await deliverOtp({ email, role: "admin", otpCode });
+  } catch (err) {
+    await authRepo.deletePendingSignup(email);
+    throw err;
+  }
+
+  res.status(201).json({
+    data: {
+      message: `A verification code has been sent to ${email}.`,
+      email,
+      expiresInSeconds: OTP_TTL_MINUTES * 60,
+      resendAfterSeconds: OTP_RESEND_SECONDS,
+    },
+  });
+});
+
 // POST /api/auth/resend-otp — public. body: { email }
 export const resendOtp = asyncHandler(async (req, res) => {
   const { email } = req.body;
@@ -180,6 +228,12 @@ export const verifyOtp = asyncHandler(async (req, res) => {
       phone: pending.phone,
       passwordHash: pending.password_hash,
       emailVerified: true,
+      // Self-registered admins (registerAdmin above) start at zero real
+      // permissions — Tier 1, promotable by a Super Admin later. Doesn't
+      // affect worker/business (these columns are meaningless for them) or
+      // CLI-provisioned admins (create-admin.js writes directly, never
+      // goes through this pending-signup/OTP path at all).
+      ...(pending.role === "admin" ? { canBanUsers: false, canReleaseFunds: false } : {}),
     });
   } catch (err) {
     if (err.code === "23505") throw ApiError.conflict("An account with this email already exists.");
