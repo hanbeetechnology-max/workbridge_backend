@@ -172,6 +172,9 @@ export async function listDisputedProjects() {
   const { rows } = await query(
     `SELECT p.*, w.name AS worker_name,
             COALESCE(NULLIF(b.profile->>'companyName', ''), b.name) AS business_name,
+            CASE WHEN p.dispute_raised_by = p.worker_id THEN 'worker'
+                 WHEN p.dispute_raised_by = p.business_id THEN 'business'
+                 ELSE NULL END AS dispute_raised_by_role,
             EXISTS (
               SELECT 1 FROM perk_purchases pp
               WHERE pp.perk_id = 'dispute-fast-track' AND pp.target_id = p.id
@@ -205,6 +208,43 @@ export async function listAllInvoices() {
      LIMIT 200`
   );
   return rows;
+}
+
+// GET /api/admin/manual-payouts — "who do I owe money to" queue: every
+// PAYOUT transaction that fell back to WALLET_PENDING_MANUAL (Cashfree
+// Payouts unavailable/failed at completion time — see completeProject in
+// projects.controller.js) and hasn't been marked as manually wired yet.
+// Includes the worker's saved bank/UPI destination directly — that's the
+// whole point, no need to click through to their profile to find it.
+export async function listPendingManualPayouts() {
+  const { rows } = await query(
+    `SELECT t.id, t.project_id, t.amount, t.created_at,
+            w.name AS worker_name, w.payout_method, w.payout_details,
+            p.title AS project_title,
+            COALESCE(NULLIF(b.profile->>'companyName', ''), b.name) AS business_name
+     FROM transactions t
+     JOIN users w ON w.id = t.worker_id
+     LEFT JOIN projects p ON p.id = t.project_id
+     LEFT JOIN public_user_profiles b ON b.id = t.business_id
+     WHERE t.settlement_method = 'WALLET_PENDING_MANUAL' AND t.manual_payout_completed_at IS NULL AND t.type = 'PAYOUT'
+     ORDER BY t.created_at ASC`
+  );
+  return rows;
+}
+
+// POST /api/admin/manual-payouts/:id/complete — staff confirming they
+// actually wired a WALLET_PENDING_MANUAL payout by hand (NEFT/RTGS).
+// settlement_method itself is untouched (see schema.sql's comment) — this
+// only records that it's been handled, so it drops off the queue above.
+export async function completeManualPayout(id, note) {
+  const { rows } = await query(
+    `UPDATE transactions
+     SET manual_payout_completed_at = now(), manual_payout_note = $2
+     WHERE id = $1 AND settlement_method = 'WALLET_PENDING_MANUAL'
+     RETURNING *`,
+    [id, note ?? null]
+  );
+  return rows[0] ?? null;
 }
 
 // ─── Fund releases queue ──────────────────────────────────────────────────────

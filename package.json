@@ -22,6 +22,10 @@
     "migrate:plus-subscription-tier": "node scripts/migrate-042-plus-subscription-tier.js",
     "migrate:withdrawal-razorpay-payout": "node scripts/migrate-043-withdrawal-razorpay-payout.js",
     "migrate:worker-payout-account": "node scripts/migrate-044-worker-payout-account.js",
+    "migrate:message-reply": "node scripts/migrate-045-message-reply.js",
+    "migrate:dispute-raise": "node scripts/migrate-046-dispute-raise.js",
+    "migrate:manual-payout-tracking": "node scripts/migrate-047-manual-payout-tracking.js",
+    "migrate:dispute-rebuttal-evidence": "node scripts/migrate-048-dispute-rebuttal-evidence.js",
     "test": "node --test"
   },
   "dependencies": {

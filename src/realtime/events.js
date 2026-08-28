@@ -2,6 +2,7 @@ import { getIO, userRoom, projectRoom, adminRoom } from "./socket.js";
 import { sendPushToUser } from "../services/push.service.js";
 import * as usersRepo from "../repositories/users.repository.js";
 import * as notificationsRepo from "../repositories/notifications.repository.js";
+import { isEmailConfigured, sendDisputeRaisedEmail } from "../services/email.service.js";
 
 // Real device push (Notification/Push API — see push.service.js) reaches a
 // user whether or not they're actively connected via socket right now,
@@ -136,6 +137,13 @@ function buildProjectPushCopy(type, payload, project, role) {
     case "MESSAGE_CREATED":
       return { title: "New message", body: `New message on "${title}".`, url };
     case "STATUS_CHANGED":
+      // Whoever receives this (senderId already excludes the raiser in
+      // emitProjectEvent below) is the accused party — worth a specific
+      // nudge to actually go see why and respond, not just a generic
+      // "status changed" that gives them no reason to click through.
+      if (payload.status === "DISPUTED") {
+        return { title: "A dispute was raised", body: `A dispute was raised on "${title}" — see why and respond.`, url };
+      }
       return { title: "Project update", body: `"${title}" is now ${statusLabel(payload.status)}.`, url };
     case "CANDIDATE_ACCEPTED":
       return { title: "Project assigned", body: `"${title}" now has a worker assigned.`, url };
@@ -199,6 +207,42 @@ export function emitProjectEvent(project, type, payload = {}) {
     firePush(project.business_id, businessCopy, category);
     fireNotification(project.business_id, businessCopy, notifType);
   }
+}
+
+// Real money sits frozen from the moment a dispute is raised — unlike
+// every other admin queue on this platform (verifications, escrow funding,
+// withdrawals), which staff only ever discover by opening that tab, this
+// gets an active out-of-band alert too. Two channels, independently
+// best-effort: a live socket push to adminRoom() so anyone with the panel
+// open right now sees the badge update immediately (same mechanism
+// emitSupportMessage already uses), and an email to every admin so it's
+// not missed entirely if nobody's looking. Called alongside (not instead
+// of) emitProjectEvent above, which still handles the counterparty's own
+// "a dispute was raised, come see why" notification.
+export function emitDisputeRaised(project, { raiserRole, reason }) {
+  const io = getIO();
+  if (io) {
+    io.to(adminRoom()).emit("project:event", { type: "DISPUTE_RAISED", projectId: project.id, raiserRole, reason });
+  }
+
+  if (!isEmailConfigured()) return;
+  usersRepo
+    .listAdminEmails()
+    .then((emails) => {
+      for (const to of emails) {
+        sendDisputeRaisedEmail({
+          to,
+          projectTitle: project.title,
+          raiserRole,
+          reason,
+          // AdminPanel.jsx's tab state isn't URL-synced (plain useState, no
+          // query param) — no real deep link to the Disputes tab exists, so
+          // this points at the Admin Panel itself rather than implying one.
+          adminUrl: `${process.env.FRONTEND_URL}/admin`,
+        }).catch((err) => console.error("[email] sendDisputeRaisedEmail threw:", err));
+      }
+    })
+    .catch((err) => console.error("[email] listAdminEmails threw:", err));
 }
 
 // Thread-side counterpart to emitProjectEvent, for the entity-wide chat

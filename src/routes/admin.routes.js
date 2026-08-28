@@ -9,6 +9,8 @@ import {
   resolveDispute,
   listAllUsers,
   listTransactions,
+  listManualPayouts,
+  completeManualPayout,
   listPendingReleases,
   listPendingWithdrawals,
   resolveWithdrawal,
@@ -49,6 +51,8 @@ adminRouter.get("/disputes", listDisputes);
 adminRouter.post("/disputes/:id/resolve", resolveDispute);
 
 adminRouter.get("/transactions", listTransactions);
+adminRouter.get("/manual-payouts", listManualPayouts);
+adminRouter.post("/manual-payouts/:id/complete", completeManualPayout);
 adminRouter.get("/pending-releases", listPendingReleases);
 
 adminRouter.get("/withdrawals", listPendingWithdrawals);

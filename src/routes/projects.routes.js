@@ -6,6 +6,7 @@ import {
   listProjectsQuerySchema,
   updateProjectStatusSchema,
   proposeBudgetSchema,
+  disputeRebuttalSchema,
 } from "../validators/projects.validators.js";
 import {
   cancelAndRefund,
@@ -23,6 +24,7 @@ import {
   updateProjectStatus,
   proposeBudget,
   resolveBudgetProposal,
+  raiseDisputeRebuttal,
 } from "../controllers/projects.controller.js";
 import { createSubmission, listSubmissions } from "../controllers/submissions.controller.js";
 import { createSubmissionSchema } from "../validators/submissions.validators.js";
@@ -44,6 +46,11 @@ projectsRouter.get("/", validate(listProjectsQuerySchema, "query"), listProjects
 projectsRouter.post("/", requireRole("business"), validate(createProjectSchema), createProject);
 projectsRouter.get("/:id", getProject);
 projectsRouter.patch("/:id", validate(updateProjectStatusSchema), updateProjectStatus);
+// The accused party's one-shot structured response to a dispute — its own
+// route rather than another generic-PATCH branch, same reasoning as
+// fund-escrow/checkout/request-release below (real validation + audit log,
+// not just a status string).
+projectsRouter.post("/:id/dispute/rebuttal", validate(disputeRebuttalSchema), raiseDisputeRebuttal);
 
 // Real effects of the "AI Shortlist" / "Enterprise Broadcast" perks —
 // gated behind an active purchase targeting this exact project (checked

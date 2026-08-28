@@ -332,6 +332,45 @@ export async function setRazorpayRefund(client, id, refundId) {
   return rows[0] ?? null;
 }
 
+// Same status-flip + timeline entry as updateStatus, plus the dedicated
+// dispute_reason/dispute_raised_by/disputed_at columns (migrations/
+// 046_dispute_raise.sql) — a clean, queryable field for AdminDisputesTab
+// instead of digging a reason out of the timeline JSONB blob.
+export async function raiseDispute(client, id, { reason, raisedBy, evidence }) {
+  const { rows } = await client.query(
+    `UPDATE projects
+     SET status = 'DISPUTED'::project_status,
+         dispute_reason = $2,
+         dispute_raised_by = $3,
+         dispute_evidence = $4::jsonb,
+         disputed_at = now(),
+         timeline = timeline || jsonb_build_object('status', 'DISPUTED', 'at', now(), 'note', $2::text)
+     WHERE id = $1
+     RETURNING *`,
+    [id, reason, raisedBy, JSON.stringify(evidence ?? [])]
+  );
+  return rows[0] ?? null;
+}
+
+// The accused party's one-shot structured response — see
+// migrations/048_dispute_rebuttal_evidence.sql. Guarded to only ever write
+// once (WHERE dispute_rebuttal_by IS NULL) so a second call can never
+// silently overwrite an existing rebuttal; the controller checks this too,
+// but the DB is the real guard against a race between two rapid requests.
+export async function submitDisputeRebuttal(client, id, { statement, submittedBy, evidence }) {
+  const { rows } = await client.query(
+    `UPDATE projects
+     SET dispute_rebuttal = $2,
+         dispute_rebuttal_by = $3,
+         dispute_rebuttal_evidence = $4::jsonb,
+         dispute_rebuttal_at = now()
+     WHERE id = $1 AND status = 'DISPUTED' AND dispute_rebuttal_by IS NULL
+     RETURNING *`,
+    [id, statement, submittedBy, JSON.stringify(evidence ?? [])]
+  );
+  return rows[0] ?? null;
+}
+
 export async function updateStatus(id, status, client = { query }, note = null) {
   const timelineEntry = note
     ? `jsonb_build_object('status', $2::text, 'at', now(), 'note', $3::text)`

@@ -296,6 +296,17 @@ CREATE TABLE projects (
   razorpay_payment_id   TEXT,
   razorpay_transfer_id  TEXT,
   razorpay_refund_id    TEXT,
+  -- Self-serve "Raise a Dispute" context — see migrations/046_dispute_raise.sql.
+  dispute_reason      TEXT,
+  dispute_raised_by   UUID REFERENCES users(id) ON DELETE SET NULL,
+  disputed_at         TIMESTAMPTZ,
+  -- The accused party's one-shot structured response, plus evidence images
+  -- for both sides — see migrations/048_dispute_rebuttal_evidence.sql.
+  dispute_evidence          JSONB NOT NULL DEFAULT '[]'::jsonb,
+  dispute_rebuttal          TEXT,
+  dispute_rebuttal_by       UUID REFERENCES users(id) ON DELETE SET NULL,
+  dispute_rebuttal_at       TIMESTAMPTZ,
+  dispute_rebuttal_evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
   status            project_status NOT NULL DEFAULT 'INVITED',
   deadline          DATE,
   -- Distinct from `deadline` above (the DELIVERY date) — application_deadline
@@ -411,6 +422,13 @@ CREATE TABLE transactions (
   -- cashfree.service.js) but reused unchanged rather than migrated.
   settlement_method TEXT NOT NULL DEFAULT 'WALLET'
     CHECK (settlement_method IN ('WALLET', 'RAZORPAY_ROUTE_AUTO', 'WALLET_PENDING_MANUAL', 'RAZORPAYX_PAYOUT')),
+  -- Set once staff actually wire a WALLET_PENDING_MANUAL payout by hand
+  -- (NEFT/RTGS) — see migrations/047_manual_payout_tracking.sql. Keeps
+  -- settlement_method itself as the honest historical record (it wasn't
+  -- auto-settled via Cashfree) while still letting the Admin Panel clear it
+  -- off the "who do I owe money to" list.
+  manual_payout_completed_at TIMESTAMPTZ,
+  manual_payout_note         TEXT,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
 
@@ -419,6 +437,7 @@ CREATE TABLE transactions (
 );
 
 CREATE INDEX idx_transactions_project_id  ON transactions (project_id);
+CREATE INDEX idx_transactions_settlement_method ON transactions (settlement_method) WHERE settlement_method = 'WALLET_PENDING_MANUAL';
 CREATE INDEX idx_transactions_worker_id   ON transactions (worker_id);
 CREATE INDEX idx_transactions_business_id ON transactions (business_id);
 CREATE INDEX idx_transactions_created_at  ON transactions (created_at DESC);
@@ -499,8 +518,11 @@ CREATE TRIGGER trg_reviews_updated_at
 CREATE TYPE platform_log_action AS ENUM (
   'VERIFY_APPROVED',
   'VERIFY_REJECTED',
+  'DISPUTE_RAISED',
+  'DISPUTE_REBUTTAL_SUBMITTED',
   'DISPUTE_REFUNDED',
   'DISPUTE_RELEASED',
+  'DISPUTE_SPLIT',
   'SUBMISSION_APPROVED',
   'SUBMISSION_REJECTED',
   'SECURITY_REDACTED_AND_SENT',

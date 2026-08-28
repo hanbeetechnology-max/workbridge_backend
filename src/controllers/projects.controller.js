@@ -9,7 +9,9 @@ import * as ledgerEventsRepo from "../repositories/ledger_events.repository.js";
 import * as escrowFundingRepo from "../repositories/escrow_funding_requests.repository.js";
 import * as threadsRepo from "../repositories/threads.repository.js";
 import * as perkPurchasesRepo from "../repositories/perk_purchases.repository.js";
-import { emitProjectEvent, emitBroadcast } from "../realtime/events.js";
+import * as adminRepo from "../repositories/admin.repository.js";
+import { emitProjectEvent, emitBroadcast, emitDisputeRaised } from "../realtime/events.js";
+import { validateDisputeEvidence } from "../utils/disputeEvidence.js";
 import { calculateLevel } from "../utils/gamification.js";
 import { sendHiredSms } from "../services/sms.service.js";
 import * as razorpayService from "../services/razorpay.service.js";
@@ -252,12 +254,88 @@ export const updateProjectStatus = asyncHandler(async (req, res) => {
     );
   }
 
+  // DISPUTED needs a real reason (unlike every other generic PATCH
+  // transition, where `note` stays optional) — this is the one place a
+  // resolveDispute-facing admin has zero other context to go on beyond
+  // chat history. Its own branch (not just a stricter validator) so it can
+  // also write the dedicated dispute_reason/dispute_raised_by columns and a
+  // platform_logs audit row, same "important named action, not just a bare
+  // status flip" treatment fundEscrow/cancelAndRefund/completeProject
+  // already get.
+  if (toStatus === "DISPUTED") {
+    if (!note || !String(note).trim()) {
+      throw ApiError.badRequest("A reason is required to raise a dispute.");
+    }
+    const evidence = validateDisputeEvidence(req.body.evidence);
+    const updated = await transaction(async (client) => {
+      const disputed = await projectsRepo.raiseDispute(client, id, { reason: String(note).trim(), raisedBy: req.user.id, evidence });
+      await adminRepo.insertPlatformLog(client, {
+        adminId: req.user.id,
+        action: "DISPUTE_RAISED",
+        targetProjectId: id,
+        notes: `${req.user.role === "business" ? "Business" : "Worker"} raised a dispute — ${String(note).trim()}`,
+      });
+      return disputed;
+    });
+
+    emitProjectEvent(updated, "STATUS_CHANGED", { status: toStatus, actorRole: req.user.role, note, senderId: req.user.id });
+    emitDisputeRaised(updated, { raiserRole: req.user.role, reason: String(note).trim() });
+    return res.json({ data: updated });
+  }
+
   const updated = await projectsRepo.updateStatus(id, toStatus, undefined, note);
 
   // The only realtime emit that fires for a WORKER-initiated change (Start
   // Work, Submit Work) — secureFunds/completeProject below are business-
   // only actions with their own emits.
   emitProjectEvent(updated, "STATUS_CHANGED", { status: toStatus, actorRole: req.user.role, note, senderId: req.user.id });
+
+  res.json({ data: updated });
+});
+
+// POST /api/projects/:id/dispute/rebuttal — the accused party's one real
+// chance to respond before an admin decides. Whoever raised the dispute
+// can't also rebut it (that's what the original reason already was), and
+// it only accepts one rebuttal ever, guarded by projectsRepo.
+// submitDisputeRebuttal's WHERE dispute_rebuttal_by IS NULL — ongoing
+// argument after that stays in chat, same boundary the dispute reason
+// itself already draws.
+export const raiseDisputeRebuttal = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { statement } = req.body;
+  if (!statement || !String(statement).trim()) {
+    throw ApiError.badRequest("A response is required.");
+  }
+
+  const project = await projectsRepo.findById(id);
+  if (!project) throw ApiError.notFound("Project not found.");
+
+  const isParticipant = project.worker_id === req.user.id || project.business_id === req.user.id;
+  if (!isParticipant) throw ApiError.forbidden("You are not a participant on this project.");
+  if (project.status !== "DISPUTED") throw ApiError.badRequest("This project isn't currently disputed.");
+  if (project.dispute_raised_by === req.user.id) {
+    throw ApiError.badRequest("You raised this dispute — the other side responds, not you.");
+  }
+  if (project.dispute_rebuttal_by) {
+    throw ApiError.badRequest("A response has already been submitted for this dispute.");
+  }
+
+  const evidence = validateDisputeEvidence(req.body.evidence);
+  const updated = await transaction(async (client) => {
+    const withRebuttal = await projectsRepo.submitDisputeRebuttal(client, id, {
+      statement: String(statement).trim(),
+      submittedBy: req.user.id,
+      evidence,
+    });
+    if (!withRebuttal) throw ApiError.badRequest("A response has already been submitted for this dispute.");
+    await adminRepo.insertPlatformLog(client, {
+      adminId: req.user.id,
+      action: "DISPUTE_REBUTTAL_SUBMITTED",
+      targetProjectId: id,
+      notes: `${req.user.role === "business" ? "Business" : "Worker"} responded to the dispute — ${String(statement).trim()}`,
+    });
+    return withRebuttal;
+  });
 
   res.json({ data: updated });
 });

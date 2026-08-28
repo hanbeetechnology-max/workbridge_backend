@@ -79,6 +79,32 @@ export async function sendOtpEmail({ to, otpCode, expiresInMinutes }) {
   });
 }
 
+// Real money sits frozen the moment a dispute is raised, and — unlike
+// every other admin queue on this platform — nothing else alerts staff to
+// it out-of-band; they'd otherwise only find out by happening to open the
+// Admin Panel (see events.js's emitDisputeRaised, which sends this
+// alongside a live socket push to any admin who does have it open right
+// now). Best-effort, one send per admin — a failed delivery to one staff
+// inbox must never block the others or the dispute-raise action itself.
+export async function sendDisputeRaisedEmail({ to, projectTitle, raiserRole, reason, adminUrl }) {
+  const safeTitle = escapeHtml(projectTitle);
+  const safeReason = escapeHtml(reason);
+  const raiser = raiserRole === "business" ? "The business" : "The worker";
+  return sendEmail({
+    to,
+    subject: `Dispute raised — "${projectTitle}"`,
+    text: `${raiser} raised a dispute on "${projectTitle}":\n\n"${reason}"\n\nFunds are frozen until this is resolved. Review it: ${adminUrl}`,
+    html: `
+      <div style="font-family:Arial,sans-serif;line-height:1.5;color:#111827">
+        <p>${raiser} raised a dispute on <strong>${safeTitle}</strong>:</p>
+        <p style="margin:18px 0;padding:14px 18px;background:#fef2f2;border-left:3px solid #dc2626;color:#991b1b">"${safeReason}"</p>
+        <p>Funds are frozen until this is resolved.</p>
+        <p><a href="${adminUrl}" style="color:#1B3FAB;font-weight:700">Review in the Admin Panel →</a></p>
+      </div>
+    `,
+  });
+}
+
 export async function sendPasswordResetEmail({ to, otpCode, expiresInMinutes }) {
   const safeCode = escapeHtml(otpCode);
   return sendEmail({

@@ -144,6 +144,15 @@ export async function findPublicProfileById(id) {
   return rows[0] ?? null;
 }
 
+// Every admin's email — used to fan out an out-of-band alert (see
+// events.js's emitDisputeRaised) for anything staff needs to know about
+// even when nobody has the Admin Panel open. Small, fixed-size table (a
+// handful of staff accounts), so no pagination/limit needed.
+export async function listAdminEmails() {
+  const { rows } = await query(`SELECT email FROM users WHERE role = 'admin'`);
+  return rows.map((r) => r.email);
+}
+
 // Browse-workers listing (BusinessWorkers.jsx) — ranked by rating then
 // review count, both NULLS LAST since a brand-new worker has neither yet.
 export async function listPublicProfiles({ role }) {

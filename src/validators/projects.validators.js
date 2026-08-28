@@ -75,12 +75,31 @@ export const createProjectSchema = z.object({
   { message: "Max experience must be greater than or equal to min experience.", path: ["maxExperienceYears"] }
 );
 
+const disputeEvidenceItemSchema = z.object({
+  dataUrl: z.string(),
+  caption: z.string().max(200).optional(),
+});
+
 export const updateProjectStatusSchema = z.object({
   status: z.enum(PATCHABLE_STATUSES),
-  // Only meaningful for FILES_SUBMITTED -> WORK_IN_PROGRESS today (the
-  // business explaining what needs fixing) — harmless no-op for every
-  // other transition, which simply won't pass one.
+  // Meaningful for FILES_SUBMITTED -> WORK_IN_PROGRESS (the business
+  // explaining what needs fixing) and required — enforced in the
+  // controller, not here, since it's the only status-dependent requirement
+  // — for -> DISPUTED (the reason an admin needs to actually resolve it).
+  // Harmless no-op for every other transition, which simply won't pass one.
   note: z.string().trim().max(1000).optional(),
+  // Only meaningful alongside status: "DISPUTED" — real per-item validation
+  // (data: URI shape, size cap, max count) happens in
+  // utils/disputeEvidence.js, not here; this just has to declare the key
+  // exists so zod's .parse() doesn't silently strip it before the
+  // controller ever sees it (see messages.validators.js's replyToMessageId
+  // for the same class of bug this avoids).
+  evidence: z.array(disputeEvidenceItemSchema).max(3).optional(),
+});
+
+export const disputeRebuttalSchema = z.object({
+  statement: z.string().trim().min(1).max(1000),
+  evidence: z.array(disputeEvidenceItemSchema).max(3).optional(),
 });
 
 export const listProjectsQuerySchema = z.object({

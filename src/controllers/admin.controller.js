@@ -161,14 +161,41 @@ export const listDisputes = asyncHandler(async (_req, res) => {
 export const resolveDispute = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { resolution, note } = req.body ?? {};
-  if (resolution !== "refund" && resolution !== "release") {
-    throw ApiError.badRequest('Body must include { resolution: "refund" | "release" }.');
+  if (resolution !== "refund" && resolution !== "release" && resolution !== "split") {
+    throw ApiError.badRequest('Body must include { resolution: "refund" | "release" | "split" }.');
   }
 
   const project = await projectsRepo.findById(id);
   if (!project) throw ApiError.notFound("Project not found.");
   if (project.status !== "DISPUTED") {
     throw ApiError.badRequest(`Cannot resolve a project in status ${project.status} — expected DISPUTED.`);
+  }
+
+  // Most real disputes aren't "one side gets everything" — some work
+  // genuinely happened, just not all of it, or not to spec. workerAmount
+  // is what the worker actually receives (already the final number admin
+  // decided on, not subject to the standard worker_fee_pct deduction —
+  // that fee model assumes a clean full completion, which a disputed
+  // project by definition wasn't); businessRefundAmount is what goes back.
+  // The two don't have to sum to the full budget — WorkBridge can retain
+  // the gap as a facilitation fee on a split, same non-refundable-fee
+  // principle cancelAndRefund/full-refund already apply — but can never
+  // exceed it (that would be paying out money that was never collected).
+  let workerAmount = 0;
+  let businessRefundAmount = 0;
+  if (resolution === "split") {
+    workerAmount = Number(req.body.workerAmount);
+    businessRefundAmount = Number(req.body.businessRefundAmount);
+    if (!(workerAmount >= 0) || !(businessRefundAmount >= 0)) {
+      throw ApiError.badRequest("workerAmount and businessRefundAmount must both be real numbers >= 0.");
+    }
+    if (workerAmount === 0 && businessRefundAmount === 0) {
+      throw ApiError.badRequest("At least one of workerAmount or businessRefundAmount must be greater than 0.");
+    }
+    const budgetCheck = Number(project.budget);
+    if (round2(workerAmount + businessRefundAmount) > budgetCheck) {
+      throw ApiError.badRequest(`workerAmount + businessRefundAmount can't exceed the project budget (${formatAmount(budgetCheck)}).`);
+    }
   }
 
   // Real Razorpay call, attempted OUTSIDE any DB lock — same reasoning as
@@ -235,6 +262,42 @@ export const resolveDispute = asyncHandler(async (req, res) => {
         console.error(`[cashfree] Payout failed for disputed project ${project.id}:`, err);
       }
     }
+  } else if (resolution === "split") {
+    // Both sides of a split independently, same real-call-outside-the-lock
+    // shape as refund/release above. A split project was funded through
+    // Checkout in every real case (nothing to refund otherwise), but the
+    // manual-bank-transfer guard stays for consistency with the plain
+    // refund branch above.
+    if (businessRefundAmount > 0 && project.razorpay_order_id) {
+      const refund = await cashfreeService.createRefund({
+        orderId: project.razorpay_order_id,
+        refundId: `${project.id}_refund`,
+        amountRupees: businessRefundAmount,
+        note: "dispute_split_refund",
+      });
+      refundId = refund?.refund_id ?? null;
+    }
+    if (workerAmount > 0) {
+      const worker = await usersRepo.findById(project.worker_id);
+      if (worker?.payout_method && worker?.payout_details) {
+        try {
+          const payout = await cashfreeService.createCashfreePayout({
+            requestId: `${project.id}:payout`,
+            amountRupees: workerAmount,
+            payoutMethod: worker.payout_method,
+            payoutDetails: worker.payout_details,
+            worker,
+          });
+          payoutId = payout?.id ?? null;
+          settlementMethod = "RAZORPAYX_PAYOUT";
+        } catch (err) {
+          settlementMethod = "WALLET_PENDING_MANUAL";
+          console.error(`[cashfree] Split payout failed for disputed project ${project.id}:`, err);
+        }
+      } else {
+        settlementMethod = "WALLET_PENDING_MANUAL";
+      }
+    }
   }
 
   const result = await transaction(async (client) => {
@@ -275,6 +338,63 @@ export const resolveDispute = asyncHandler(async (req, res) => {
       });
 
       return { project: updatedProject, transaction: refundTxn };
+    }
+
+    if (resolution === "split") {
+      // The project genuinely happened (partially) — COMPLETED, not
+      // CANCELLED, matching "release"'s reasoning: some real settlement
+      // occurred, this isn't a void.
+      const updatedProject = await projectsRepo.updateStatus(id, "COMPLETED", client);
+      if (refundId) await projectsRepo.setRazorpayRefund(client, id, refundId);
+      if (transferId) await projectsRepo.setRazorpayTransfer(client, id, transferId);
+
+      let refundTxn = null;
+      let payoutTxn = null;
+      if (businessRefundAmount > 0) {
+        refundTxn = await transactionsRepo.insert(
+          {
+            projectId: id,
+            workerId: project.worker_id,
+            businessId: project.business_id,
+            type: "REFUND",
+            direction: "debit",
+            amount: businessRefundAmount,
+            fundsStatus: "REFUNDED",
+            referenceNote: `Dispute split-resolved — ${formatAmount(businessRefundAmount)} refunded to business – ${project.title}`,
+          },
+          client
+        );
+      }
+      if (workerAmount > 0) {
+        payoutTxn = await transactionsRepo.insert(
+          {
+            projectId: id,
+            workerId: project.worker_id,
+            businessId: project.business_id,
+            type: "PAYOUT",
+            direction: "credit",
+            amount: workerAmount,
+            fundsStatus: "RELEASED",
+            referenceNote: payoutId
+              ? `Dispute split-resolved — ${formatAmount(workerAmount)} released to freelancer via Cashfree (${payoutId}) – ${project.title}`
+              : `Dispute split-resolved — ${formatAmount(workerAmount)} released to freelancer – ${project.title}`,
+            settlementMethod,
+          },
+          client
+        );
+        if (settlementMethod === "WALLET_PENDING_MANUAL") {
+          await usersRepo.incrementWalletBalance(client, project.worker_id, workerAmount);
+        }
+      }
+
+      await adminRepo.insertPlatformLog(client, {
+        adminId: req.user.id,
+        action: "DISPUTE_SPLIT",
+        targetProjectId: id,
+        notes: `Split resolution — ${formatAmount(workerAmount)} to worker, ${formatAmount(businessRefundAmount)} refunded to business${note ? ` — ${note}` : ""}`,
+      });
+
+      return { project: updatedProject, refund: refundTxn, payout: payoutTxn, workerAmount, businessRefundAmount, settlementMethod };
     }
 
     // resolution === "release" — identical math to completeProject.
@@ -332,6 +452,19 @@ export const resolveDispute = asyncHandler(async (req, res) => {
 export const listTransactions = asyncHandler(async (_req, res) => {
   const data = await adminRepo.listAllInvoices();
   res.json({ data });
+});
+
+// GET /api/admin/manual-payouts — the "who do I owe money to" queue.
+export const listManualPayouts = asyncHandler(async (_req, res) => {
+  const data = await adminRepo.listPendingManualPayouts();
+  res.json({ data });
+});
+
+// POST /api/admin/manual-payouts/:id/complete — body: { note? }.
+export const completeManualPayout = asyncHandler(async (req, res) => {
+  const updated = await adminRepo.completeManualPayout(req.params.id, req.body?.note);
+  if (!updated) throw ApiError.notFound("Pending manual payout not found (or already marked complete).");
+  res.json({ data: updated });
 });
 
 // ─── Fund Releases ─────────────────────────────────────────────────────────
