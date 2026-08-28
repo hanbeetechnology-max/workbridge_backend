@@ -83,7 +83,7 @@ export async function createLinkedAccount({ email, phone, legalBusinessName, ben
       contact_name: beneficiaryName,
       profile: {
         category: "professional_services",
-        subcategory: "freelancer",
+        subcategory: "Worker",
         addresses: { registered: {} },
       },
       bank_account: {

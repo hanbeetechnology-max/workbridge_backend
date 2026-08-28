@@ -291,8 +291,8 @@ export const resolveDispute = asyncHandler(async (req, res) => {
         amount: earnings,
         fundsStatus: "RELEASED",
         referenceNote: payoutId
-          ? `Dispute resolved — released to freelancer via RazorpayX (${payoutId}) – ${project.title}`
-          : `Dispute resolved — released to freelancer – ${project.title}`,
+          ? `Dispute resolved — released to Worker via RazorpayX (${payoutId}) – ${project.title}`
+          : `Dispute resolved — released to Worker – ${project.title}`,
         settlementMethod,
       },
       client
