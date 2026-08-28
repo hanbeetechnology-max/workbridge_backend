@@ -6,7 +6,7 @@ import { emitProjectEvent } from "../realtime/events.js";
 import { confirmPaymentByOrderId } from "../services/paymentConfirmation.service.js";
 
 // PAYMENT_SUCCESS_WEBHOOK — same shared confirmation path the (now
-// unused-for-Cashfree, still Razorpay-shaped) verify endpoints used to
+// unused-for-Cashfree, still CashFree-shaped) verify endpoints used to
 // call, so a project or subscription reaches the exact same
 // FUNDS_SECURED/PAID state regardless of which gateway paid for it.
 async function handlePaymentSuccess(payload) {
@@ -18,7 +18,7 @@ async function handlePaymentSuccess(payload) {
 
 // PAYMENT_FAILED_WEBHOOK / PAYMENT_USER_DROPPED_WEBHOOK — reverts a
 // PENDING_FUNDS project back to ACCEPTED, same reasoning as
-// webhook.controller.js's handlePaymentFailed for Razorpay: a business
+// webhook.controller.js's handlePaymentFailed for CashFree: a business
 // sees a real "try again" state instead of being stuck behind a checkout
 // that will never complete.
 async function handlePaymentFailed(payload) {
@@ -26,7 +26,7 @@ async function handlePaymentFailed(payload) {
   if (!order?.order_id) return;
 
   const result = await transaction(async (client) => {
-    const project = await projectsRepo.findByRazorpayOrderId(client, order.order_id);
+    const project = await projectsRepo.findByCashFreeOrderId(client, order.order_id);
     if (!project || project.status !== "PENDING_FUNDS") return null;
     return projectsRepo.updateStatus(project.id, "ACCEPTED", client);
   });
@@ -46,7 +46,7 @@ const EVENT_HANDLERS = {
 // section of the Cashfree dashboard (Payouts > Developers > Webhooks) —
 // see cashfreePayoutWebhook.controller.js for that one. Mounted directly
 // on `app` with express.raw() ahead of the global express.json() (see
-// app.js), same reasoning as webhook.controller.js's Razorpay handler:
+// app.js), same reasoning as webhook.controller.js's CashFree handler:
 // signature verification needs the exact original bytes Cashfree signed.
 export const handleCashfreeWebhook = asyncHandler(async (req, res) => {
   const signature = req.headers["x-webhook-signature"];
@@ -69,7 +69,7 @@ export const handleCashfreeWebhook = asyncHandler(async (req, res) => {
   } catch (err) {
     // Logged, not re-thrown — a 200 here is deliberate even on internal
     // failure, so Cashfree doesn't enter a retry storm. Same convention as
-    // webhook.controller.js's Razorpay handler.
+    // webhook.controller.js's CashFree handler.
     console.error(`[cashfree webhook] ${eventType} failed:`, err);
   }
 

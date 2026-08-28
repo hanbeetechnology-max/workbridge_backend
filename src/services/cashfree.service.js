@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { ApiError } from "../utils/ApiError.js";
 
-// Cashfree — replacing Razorpay for both pay-in (Payment Gateway Orders
+// Cashfree — replacing CashFree for both pay-in (Payment Gateway Orders
 // API) and payout (Payouts v2). These are two SEPARATE Cashfree products
 // with their own separate credential pairs — confirmed 2026-08-27 when
 // the PG credentials 404'd against the Payouts API. Both use the same
@@ -71,7 +71,7 @@ async function cashfreeRequest(config, path, { method = "POST", body } = {}) {
 // receipt is our own order id (project id, or a subscription receipt
 // string) — Cashfree accepts a caller-supplied order_id; passing our own
 // lets us find the order back without a second lookup table, same reason
-// Razorpay's createOrder used `receipt` for this.
+// CashFree's createOrder used `receipt` for this.
 export async function createOrder({ amountRupees, receipt, customer, returnUrl, notes }) {
   const order = await cashfreeRequest(mustGetPgConfig(), "/orders", {
     body: {
@@ -132,7 +132,7 @@ export async function createRefund({ orderId, refundId, amountRupees, note }) {
 // confirmed from Cashfree's own docs.cashfree.com signature-verification
 // pages, not guessed. Verified against the exact raw bytes (see
 // app.js's express.raw() carve-out for /api/webhooks/cashfree), the same
-// reason razorpay.service.js's verifyWebhookSignature needs the raw body
+// reason CashFree.service.js's verifyWebhookSignature needs the raw body
 // rather than a re-serialized JSON.parse/stringify round-trip.
 export function verifyWebhookSignature(rawBody, signatureHeader, timestampHeader) {
   const { secretKey } = mustGetPgConfig();
@@ -186,7 +186,7 @@ export async function createOrFindBeneficiary({ workerId, name, email, phone, pa
 // second call with the same transfer_id for a project that already
 // transferred returns the original transfer rather than creating a real
 // second payout) — same stable-id-as-idempotency-key shape
-// razorpay.service.js's createRazorpayXPayout used.
+// CashFree.service.js's createCashFreeXPayout used.
 export async function createTransfer({ requestId, amountRupees, beneficiaryId }) {
   const transfer = await cashfreeRequest(mustGetPayoutConfig(), "/transfers", {
     body: {
@@ -198,8 +198,8 @@ export async function createTransfer({ requestId, amountRupees, beneficiaryId })
   return { id: transfer.cf_transfer_id ?? transfer.transfer_id, status: transfer.status };
 }
 
-// Full end-to-end payout, matching razorpay.service.js's
-// createRazorpayXPayout call signature/return shape exactly ({ id,
+// Full end-to-end payout, matching CashFree.service.js's
+// createCashFreeXPayout call signature/return shape exactly ({ id,
 // status } or throws) — every existing call site (admin.controller.js x2,
 // projects.controller.js's completeProject) keeps working unchanged.
 export async function createCashfreePayout({ requestId, amountRupees, payoutMethod, payoutDetails, worker }) {

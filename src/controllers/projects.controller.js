@@ -12,7 +12,7 @@ import * as perkPurchasesRepo from "../repositories/perk_purchases.repository.js
 import { emitProjectEvent, emitBroadcast } from "../realtime/events.js";
 import { calculateLevel } from "../utils/gamification.js";
 import { sendHiredSms } from "../services/sms.service.js";
-import * as razorpayService from "../services/razorpay.service.js";
+import * as CashFreeService from "../services/CashFree.service.js";
 import * as cashfreeService from "../services/cashfree.service.js";
 
 // The first real token-earning trigger — MASTER_ECONOMY_PLAN.md's Ledger
@@ -316,7 +316,7 @@ export const fundEscrow = asyncHandler(async (req, res) => {
 // budget + business_fee_pct — never trusted from the client. Like
 // fundEscrow, this does NOT grant FUNDS_SECURED itself; only the
 // signature-verified webhook (webhook.controller.js) does that, once
-// Razorpay confirms payment.captured — the checkout success callback in
+// CashFree confirms payment.captured — the checkout success callback in
 // the browser is UI-optimistic only and is never trusted on its own.
 export const createCheckoutOrder = asyncHandler(async (req, res) => {
   const { id } = req.params;
@@ -330,14 +330,14 @@ export const createCheckoutOrder = asyncHandler(async (req, res) => {
   // Idempotent retry — a reload or double-click on "Pay" after an order
   // was already created (but not yet paid) re-fetches a fresh
   // payment_session_id for that SAME Cashfree order instead of minting a
-  // second one. Still written into the razorpay_order_id column/
-  // funding_method='RAZORPAY' on purpose — reusing the existing generic
+  // second one. Still written into the CashFree_order_id column/
+  // funding_method='CashFree' on purpose — reusing the existing generic
   // "gateway order id" column rather than a schema migration; the label
   // is stale, the column just stores whichever gateway's order id.
-  if (project.status === "PENDING_FUNDS" && project.funding_method === "RAZORPAY" && project.razorpay_order_id) {
+  if (project.status === "PENDING_FUNDS" && project.funding_method === "CashFree" && project.CashFree_order_id) {
     const businessFeePct = Number(project.business_fee_pct ?? BUSINESS_FEE_PCT_FALLBACK);
     const amount = round2(Number(project.budget) * (1 + businessFeePct / 100));
-    const order = await cashfreeService.getOrder(project.razorpay_order_id);
+    const order = await cashfreeService.getOrder(project.CashFree_order_id);
     res.json({
       data: {
         orderId: order.orderId,
@@ -375,7 +375,7 @@ export const createCheckoutOrder = asyncHandler(async (req, res) => {
     if (!locked || locked.status !== "ACCEPTED") {
       throw ApiError.badRequest("This project is no longer ready for checkout.");
     }
-    await projectsRepo.setRazorpayOrder(client, id, { orderId: order.orderId, businessFeePct });
+    await projectsRepo.setCashFreeOrder(client, id, { orderId: order.orderId, businessFeePct });
     return projectsRepo.updateStatus(id, "PENDING_FUNDS", client);
   });
 
@@ -451,13 +451,13 @@ export const completeProject = asyncHandler(async (req, res) => {
   const earnings = round2(budget - fee);
 
   // Real Route transfer, attempted OUTSIDE any DB lock — a network call to
-  // Razorpay has no business holding a FOR UPDATE row open across it.
+  // CashFree has no business holding a FOR UPDATE row open across it.
   // Eligible only if this project was actually funded through real
-  // Checkout (razorpay_payment_id — a manually-funded project never has
+  // Checkout (CashFree_payment_id — a manually-funded project never has
   // one) and the worker has a fully verified payout destination.
   const worker = await usersRepo.findById(project.worker_id);
   const routeEligible = Boolean(
-    project.razorpay_payment_id && worker?.razorpay_account_id && worker.razorpay_account_status === "ACTIVE"
+    project.CashFree_payment_id && worker?.CashFree_account_id && worker.CashFree_account_status === "ACTIVE"
   );
 
   let settlementMethod = "WALLET";
@@ -465,28 +465,28 @@ export const completeProject = asyncHandler(async (req, res) => {
   let payoutId = null;
   if (routeEligible) {
     try {
-      const transfer = await razorpayService.createTransfer({
-        paymentId: project.razorpay_payment_id,
-        accountId: worker.razorpay_account_id,
+      const transfer = await CashFreeService.createTransfer({
+        paymentId: project.CashFree_payment_id,
+        accountId: worker.CashFree_account_id,
         amountPaise: Math.round(earnings * 100),
         notes: { projectId: project.id, kind: "payout" },
         idempotencyKey: `${project.id}:payout`,
       });
       transferId = transfer?.transfers?.[0]?.id ?? transfer?.id ?? null;
-      settlementMethod = "RAZORPAY_ROUTE_AUTO";
+      settlementMethod = "CashFree_ROUTE_AUTO";
     } catch (err) {
       // The transfer call failing must never block completion — the
       // worker still gets paid, just into their in-app wallet for now,
       // with a durable log entry so staff can follow up (retry once the
-      // underlying issue — expired KYC, a Razorpay-side outage — clears).
+      // underlying issue — expired KYC, a CashFree-side outage — clears).
       settlementMethod = "WALLET_PENDING_MANUAL";
-      console.error(`[razorpay] Route transfer failed for project ${project.id}:`, err);
+      console.error(`[CashFree] Route transfer failed for project ${project.id}:`, err);
     }
   } else if (worker?.payout_method && worker?.payout_details) {
     // Route stays blocked pending RBI review (routeEligible above is
     // effectively always false today), so this is the real payout path: a
-    // direct RazorpayX payout to the worker's saved bank/UPI destination,
-    // from WorkBridge's own already-settled Razorpay balance — the
+    // direct CashFreeX payout to the worker's saved bank/UPI destination,
+    // from WorkBridge's own already-settled CashFree balance — the
     // "Separate Collection and Payout" architecture the RBI research
     // confirmed doesn't need the Route turnover/transparency review.
     try {
@@ -498,7 +498,7 @@ export const completeProject = asyncHandler(async (req, res) => {
         worker,
       });
       payoutId = payout?.id ?? null;
-      settlementMethod = "RAZORPAYX_PAYOUT";
+      settlementMethod = "CashFreeX_PAYOUT";
     } catch (err) {
       settlementMethod = "WALLET_PENDING_MANUAL";
       console.error(`[cashfree] Payout failed for project ${project.id}:`, err);
@@ -518,11 +518,11 @@ export const completeProject = asyncHandler(async (req, res) => {
 
     // a. Update project status
     const updatedProject = await projectsRepo.updateStatus(id, "COMPLETED", client);
-    if (transferId) await projectsRepo.setRazorpayTransfer(client, id, transferId);
+    if (transferId) await projectsRepo.setCashFreeTransfer(client, id, transferId);
 
     // b. Insert into the transactions ledger — one row per money movement,
     // not one row with a net amount, so the fee is independently auditable.
-    // payoutId (a RazorpayX pout_XXX id) has no dedicated project column
+    // payoutId (a CashFreeX pout_XXX id) has no dedicated project column
     // like transferId does — folded into referenceNote instead, since it's
     // audit context, not something any other code path looks up by.
     const payoutTxn = await transactionsRepo.insert(
@@ -534,7 +534,7 @@ export const completeProject = asyncHandler(async (req, res) => {
         direction: "credit",
         amount: earnings,
         fundsStatus: "RELEASED",
-        referenceNote: payoutId ? `Payment released via RazorpayX (${payoutId}) – ${project.title}` : `Payment released – ${project.title}`,
+        referenceNote: payoutId ? `Payment released via CashFreeX (${payoutId}) – ${project.title}` : `Payment released – ${project.title}`,
         settlementMethod,
       },
       client
@@ -554,9 +554,9 @@ export const completeProject = asyncHandler(async (req, res) => {
 
     // c. Update the worker's wallet balance — skipped when the money
     // already left for the worker's real bank via Route or a direct
-    // RazorpayX payout; crediting the in-app wallet too would double-count
+    // CashFreeX payout; crediting the in-app wallet too would double-count
     // spendable money.
-    if (settlementMethod !== "RAZORPAY_ROUTE_AUTO" && settlementMethod !== "RAZORPAYX_PAYOUT") {
+    if (settlementMethod !== "CashFree_ROUTE_AUTO" && settlementMethod !== "CashFreeX_PAYOUT") {
       await usersRepo.incrementWalletBalance(client, project.worker_id, earnings);
     }
 
@@ -738,18 +738,18 @@ export const cancelAndRefund = asyncHandler(async (req, res) => {
   // Real refund, attempted OUTSIDE any DB lock — same reasoning as
   // completeProject's payout call above. Budget-only: the 8% business fee
   // is retained as WorkBridge's non-refundable facilitation fee on a
-  // cancelled project (Terms & Conditions §6). No razorpay_order_id means
+  // cancelled project (Terms & Conditions §6). No CashFree_order_id means
   // this project was funded through the manual bank-transfer fallback —
   // ledger-only, exactly as before this integration existed. Cashfree's
-  // refund API is order-scoped (not payment-scoped like Razorpay's was),
-  // so this keys off razorpay_order_id (the reused column — see
-  // cashfree.service.js) rather than razorpay_payment_id.
+  // refund API is order-scoped (not payment-scoped like CashFree's was),
+  // so this keys off CashFree_order_id (the reused column — see
+  // cashfree.service.js) rather than CashFree_payment_id.
   let refundId = null;
-  if (project.razorpay_order_id) {
+  if (project.CashFree_order_id) {
     // Cashfree's refund_id only allows alphanumeric/underscore/hyphen/dot —
     // no colon, unlike the transfer_id convention used elsewhere.
     const refund = await cashfreeService.createRefund({
-      orderId: project.razorpay_order_id,
+      orderId: project.CashFree_order_id,
       refundId: `${project.id}_refund`,
       amountRupees: Number(project.budget),
       note: "cancel_refund",
@@ -759,7 +759,7 @@ export const cancelAndRefund = asyncHandler(async (req, res) => {
 
   const result = await transaction(async (client) => {
     // Re-locked, re-checked — the unlocked read above only decided
-    // whether/how much to refund via Razorpay; this is the real guard
+    // whether/how much to refund via CashFree; this is the real guard
     // against a race (e.g. the project completing normally in between).
     const locked = await projectsRepo.findByIdForUpdate(client, id);
     if (!locked) throw ApiError.notFound("Project not found.");
@@ -770,7 +770,7 @@ export const cancelAndRefund = asyncHandler(async (req, res) => {
     }
 
     const updatedProject = await projectsRepo.updateStatus(id, "CANCELLED", client);
-    if (refundId) await projectsRepo.setRazorpayRefund(client, id, refundId);
+    if (refundId) await projectsRepo.setCashFreeRefund(client, id, refundId);
 
     const refundTxn = await transactionsRepo.insert(
       {

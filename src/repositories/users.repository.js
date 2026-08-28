@@ -274,15 +274,15 @@ export async function findForUpdate(client, id) {
   return rows[0] ?? null;
 }
 
-// POST /api/payments/route-account — persists only the acc_XXXX id Razorpay
+// POST /api/payments/route-account — persists only the acc_XXXX id CashFree
 // hands back, never the raw bank account number/IFSC the worker submitted
-// (those go straight through to Razorpay's own createLinkedAccount call
+// (those go straight through to CashFree's own createLinkedAccount call
 // and are never written to any WorkBridge table).
-export async function setRazorpayAccount(userId, { accountId, status, email }, client = { query }) {
+export async function setCashFreeAccount(userId, { accountId, status, email }, client = { query }) {
   const { rows } = await client.query(
     `UPDATE users
-     SET razorpay_account_id = $2, razorpay_account_status = $3::razorpay_account_status,
-         razorpay_account_email = $4, razorpay_linked_at = now()
+     SET CashFree_account_id = $2, CashFree_account_status = $3::CashFree_account_status,
+         CashFree_account_email = $4, CashFree_linked_at = now()
      WHERE id = $1
      RETURNING *`,
     [userId, accountId, status, email]
@@ -292,17 +292,17 @@ export async function setRazorpayAccount(userId, { accountId, status, email }, c
 
 // Webhook-driven (account.activated / account.under_review /
 // account.needs_clarification) — keeps status current without WorkBridge
-// ever having to poll Razorpay for it.
-export async function updateRazorpayAccountStatusByAccountId(accountId, status) {
+// ever having to poll CashFree for it.
+export async function updateCashFreeAccountStatusByAccountId(accountId, status) {
   const { rows } = await query(
-    `UPDATE users SET razorpay_account_status = $2::razorpay_account_status WHERE razorpay_account_id = $1 RETURNING *`,
+    `UPDATE users SET CashFree_account_status = $2::CashFree_account_status WHERE CashFree_account_id = $1 RETURNING *`,
     [accountId, status]
   );
   return rows[0] ?? null;
 }
 
 // A worker's saved payout destination — lets completeProject/resolveDispute
-// pay them directly via RazorpayX at completion without retyping bank/UPI
+// pay them directly via CashFreeX at completion without retyping bank/UPI
 // details each time (see migrations/044_worker_payout_account.sql). Same
 // payout_method/payout_details shape as withdrawal_requests, just persisted
 // as a default here instead of per-request.

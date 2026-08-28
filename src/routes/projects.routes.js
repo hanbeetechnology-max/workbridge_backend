@@ -64,7 +64,7 @@ projectsRouter.get("/:id/candidates", listCandidatesForProject);
 // in the route table, not buried in an if-branch inside the generic PATCH
 // handler.
 projectsRouter.post("/:id/fund-escrow", requireRole("business"), fundEscrow);
-// Real Razorpay Checkout — the primary funding path; fund-escrow above
+// Real CashFree Checkout — the primary funding path; fund-escrow above
 // stays as the manual bank-transfer fallback (see createCheckoutOrder's
 // own comment in projects.controller.js for why both coexist).
 projectsRouter.post("/:id/checkout", requireRole("business"), createCheckoutOrder);

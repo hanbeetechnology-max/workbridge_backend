@@ -23,12 +23,12 @@ const pool = new pg.Pool({
 });
 
 try {
-  const migrationPath = path.resolve(__dirname, "../migrations/040_razorpay_route.sql");
+  const migrationPath = path.resolve(__dirname, "../migrations/040_CashFree_route.sql");
   const sql = readFileSync(migrationPath, "utf8");
 
-  console.log(`Applying migrations/040_razorpay_route.sql to ${dbHost}...`);
+  console.log(`Applying migrations/040_CashFree_route.sql to ${dbHost}...`);
   await pool.query(sql);
-  console.log("Migration applied successfully — users/projects/transactions gained Razorpay Route columns, razorpay_webhook_events created.");
+  console.log("Migration applied successfully — users/projects/transactions gained CashFree Route columns, CashFree_webhook_events created.");
 } catch (err) {
   console.error("Migration failed:");
   console.error(err);

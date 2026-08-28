@@ -256,14 +256,20 @@ export const sendThreadMessage = asyncHandler(async (req, res) => {
   await assertNotBlocked(req, otherUserId);
   await assertNotChatBanned(req);
 
-  const { body } = req.body;
+  const { body, replyToMessageId } = req.body;
   if (containsContactInfo(body)) {
     await blockedAttemptsRepo.create({ threadId: thread.id, senderId: req.user.id, attemptedText: body });
     await notifyBlockedAttempt(req.user.id);
     throw ApiError.badRequest(CONTACT_INFO_MESSAGE);
   }
 
-  const message = await messagesRepo.create({ threadId: thread.id, senderId: req.user.id, body });
+  let replyTo = null;
+  if (replyToMessageId) {
+    replyTo = await messagesRepo.findByIdInThread(replyToMessageId, thread.id);
+    if (!replyTo) throw ApiError.badRequest("That message isn't part of this conversation.");
+  }
+
+  const message = await messagesRepo.create({ threadId: thread.id, senderId: req.user.id, body, replyToMessageId: replyTo?.id ?? null });
 
   emitThreadEvent(thread, "MESSAGE_CREATED", { messageId: message.id, senderId: req.user.id });
 

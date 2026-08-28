@@ -40,9 +40,9 @@ CREATE TYPE transaction_direction AS ENUM ('credit', 'debit');
 -- even though this is an internal schema term, not user-facing text.
 CREATE TYPE funds_status AS ENUM ('HELD', 'RELEASED', 'REFUNDED');
 
--- Razorpay Route linked-account state for a worker's payout destination —
--- see migrations/040_razorpay_route.sql.
-CREATE TYPE razorpay_account_status AS ENUM
+-- CashFree Route linked-account state for a worker's payout destination —
+-- see migrations/040_CashFree_route.sql.
+CREATE TYPE CashFree_account_status AS ENUM
   ('NOT_LINKED', 'PENDING', 'ACTIVE', 'NEEDS_CLARIFICATION', 'REJECTED');
 
 -- Manual pay-per-period subscriptions (not recurring auto-charge — see
@@ -133,14 +133,14 @@ CREATE TABLE users (
   -- Per-category push notification preferences (Settings > Notifications).
   -- See migrations/039_notification_prefs.sql.
   notification_prefs JSONB NOT NULL DEFAULT '{"chat": true, "projects": true, "payments": true}'::jsonb,
-  -- Razorpay Route linked account — a worker's payout destination. Only
+  -- CashFree Route linked account — a worker's payout destination. Only
   -- the acc_XXXX id/status/email are ever stored; raw bank details go
-  -- straight to Razorpay and are never persisted here. See
-  -- migrations/040_razorpay_route.sql.
-  razorpay_account_id     TEXT UNIQUE,
-  razorpay_account_status razorpay_account_status NOT NULL DEFAULT 'NOT_LINKED',
-  razorpay_account_email  TEXT,
-  razorpay_linked_at      TIMESTAMPTZ,
+  -- straight to CashFree and are never persisted here. See
+  -- migrations/040_CashFree_route.sql.
+  CashFree_account_id     TEXT UNIQUE,
+  CashFree_account_status CashFree_account_status NOT NULL DEFAULT 'NOT_LINKED',
+  CashFree_account_email  TEXT,
+  CashFree_linked_at      TIMESTAMPTZ,
   -- Cached current-plan lookup for the manual pay-per-period subscription
   -- flow — see migrations/041_subscription_payments.sql.
   subscription_tier       subscription_tier NOT NULL DEFAULT 'FREE',
@@ -278,18 +278,18 @@ CREATE TABLE projects (
   budget            NUMERIC(12, 2) NOT NULL CHECK (budget > 0),
   -- Deprecated in favor of business_fee_pct/worker_fee_pct below — kept,
   -- untouched, only for historical rows created before the disclosed
-  -- split; no code path reads it anymore. See migrations/040_razorpay_route.sql.
+  -- split; no code path reads it anymore. See migrations/040_CashFree_route.sql.
   platform_fee_pct  NUMERIC(5, 2) NOT NULL DEFAULT 15.00,
   -- The disclosed split: business pays budget+business_fee_pct at
   -- checkout, worker receives budget-worker_fee_pct at payout.
   business_fee_pct  NUMERIC(5, 2) NOT NULL DEFAULT 8.00,
   worker_fee_pct    NUMERIC(5, 2) NOT NULL DEFAULT 7.00,
-  funding_method    TEXT NOT NULL DEFAULT 'RAZORPAY'
-    CHECK (funding_method IN ('RAZORPAY', 'MANUAL_BANK_TRANSFER')),
-  razorpay_order_id     TEXT UNIQUE,
-  razorpay_payment_id   TEXT,
-  razorpay_transfer_id  TEXT,
-  razorpay_refund_id    TEXT,
+  funding_method    TEXT NOT NULL DEFAULT 'CashFree'
+    CHECK (funding_method IN ('CashFree', 'MANUAL_BANK_TRANSFER')),
+  CashFree_order_id     TEXT UNIQUE,
+  CashFree_payment_id   TEXT,
+  CashFree_transfer_id  TEXT,
+  CashFree_refund_id    TEXT,
   status            project_status NOT NULL DEFAULT 'INVITED',
   deadline          DATE,
   -- Distinct from `deadline` above (the DELIVERY date) — application_deadline
@@ -397,12 +397,12 @@ CREATE TABLE transactions (
   reference_note    TEXT,
   -- Distinguishes a worker's real bank payout (Route transfer) from an
   -- in-app wallet credit awaiting manual withdrawal — completeProject
-  -- picks between them per-project. See migrations/040_razorpay_route.sql.
-  -- RAZORPAYX_PAYOUT — a direct RazorpayX payout to the worker's saved
+  -- picks between them per-project. See migrations/040_CashFree_route.sql.
+  -- CashFreeX_PAYOUT — a direct CashFreeX payout to the worker's saved
   -- bank/UPI details (see users.payout_method/payout_details above),
-  -- distinct from RAZORPAY_ROUTE_AUTO. See migrations/044_worker_payout_account.sql.
+  -- distinct from CashFree_ROUTE_AUTO. See migrations/044_worker_payout_account.sql.
   settlement_method TEXT NOT NULL DEFAULT 'WALLET'
-    CHECK (settlement_method IN ('WALLET', 'RAZORPAY_ROUTE_AUTO', 'WALLET_PENDING_MANUAL', 'RAZORPAYX_PAYOUT')),
+    CHECK (settlement_method IN ('WALLET', 'CashFree_ROUTE_AUTO', 'WALLET_PENDING_MANUAL', 'CashFreeX_PAYOUT')),
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
 
@@ -432,7 +432,7 @@ CREATE TYPE payout_method AS ENUM ('UPI', 'BANK_TRANSFER');
 
 -- A worker's saved default payout destination — added after this enum
 -- since users is created above, before payout_method exists. Lets
--- completeProject/resolveDispute pay a worker directly via RazorpayX at
+-- completeProject/resolveDispute pay a worker directly via CashFreeX at
 -- completion without the (still RBI-blocked) Route linked-account flow.
 -- See migrations/044_worker_payout_account.sql.
 ALTER TABLE users ADD COLUMN payout_method payout_method;
@@ -631,6 +631,8 @@ CREATE TABLE messages (
   -- message by migrations/031_chat_threads.sql; every new message gets one
   -- resolved server-side (messages.controller.js), never client-supplied.
   thread_id         UUID REFERENCES chat_threads(id) ON DELETE CASCADE,
+  -- WhatsApp-style "reply to this message" — see migrations/045_message_reply.sql.
+  reply_to_message_id UUID REFERENCES messages(id) ON DELETE SET NULL,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
 
   CONSTRAINT chk_message_content CHECK (body IS NOT NULL OR submission_id IS NOT NULL)
@@ -638,6 +640,7 @@ CREATE TABLE messages (
 
 CREATE INDEX idx_messages_project_id_created_at ON messages (project_id, created_at);
 CREATE INDEX idx_messages_thread_id_created_at ON messages (thread_id, created_at);
+CREATE INDEX idx_messages_reply_to_message_id ON messages (reply_to_message_id);
 
 -- ─── 7b. user_blocks ────────────────────────────────────────────────────────
 -- WhatsApp-style blocking: either participant on a chat can block the
@@ -917,13 +920,13 @@ CREATE TABLE profile_audit_requests (
 CREATE INDEX idx_profile_audit_requests_status ON profile_audit_requests (status, created_at);
 CREATE INDEX idx_profile_audit_requests_worker ON profile_audit_requests (worker_id, created_at DESC);
 
--- Idempotency + audit trail for incoming Razorpay webhook deliveries —
--- Razorpay retries aggressively on anything but a fast 200, and the same
--- event can arrive more than once; razorpay_event_id is the dedupe key.
--- See migrations/040_razorpay_route.sql.
-CREATE TABLE razorpay_webhook_events (
+-- Idempotency + audit trail for incoming CashFree webhook deliveries —
+-- CashFree retries aggressively on anything but a fast 200, and the same
+-- event can arrive more than once; CashFree_event_id is the dedupe key.
+-- See migrations/040_CashFree_route.sql.
+CREATE TABLE CashFree_webhook_events (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  razorpay_event_id TEXT NOT NULL UNIQUE,
+  CashFree_event_id TEXT NOT NULL UNIQUE,
   event_type        TEXT NOT NULL,
   payload           JSONB NOT NULL,
   processed_at      TIMESTAMPTZ,
@@ -931,9 +934,9 @@ CREATE TABLE razorpay_webhook_events (
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_razorpay_webhook_events_type ON razorpay_webhook_events (event_type, created_at DESC);
+CREATE INDEX idx_CashFree_webhook_events_type ON CashFree_webhook_events (event_type, created_at DESC);
 
--- Manual pay-per-period subscription payments — a plain one-time Razorpay
+-- Manual pay-per-period subscription payments — a plain one-time CashFree
 -- Checkout charge per billing period, NOT a recurring auto-charge (that
 -- would need a UPI Autopay/NACH e-mandate, a separate regulated flow).
 -- See migrations/041_subscription_payments.sql.
@@ -943,8 +946,8 @@ CREATE TABLE subscription_payments (
   tier                subscription_tier NOT NULL,
   billing_period      subscription_billing_period NOT NULL,
   amount              NUMERIC(12, 2) NOT NULL CHECK (amount > 0),
-  razorpay_order_id   TEXT UNIQUE,
-  razorpay_payment_id TEXT,
+  CashFree_order_id   TEXT UNIQUE,
+  CashFree_payment_id TEXT,
   status              subscription_payment_status NOT NULL DEFAULT 'PENDING',
   period_start        TIMESTAMPTZ,
   period_end          TIMESTAMPTZ,

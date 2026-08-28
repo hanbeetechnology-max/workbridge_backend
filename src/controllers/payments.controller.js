@@ -5,7 +5,7 @@ import { requireReverify } from "../middleware/guard.js";
 import * as usersRepo from "../repositories/users.repository.js";
 import * as subscriptionPaymentsRepo from "../repositories/subscription_payments.repository.js";
 import * as projectsRepo from "../repositories/projects.repository.js";
-import * as razorpayService from "../services/razorpay.service.js";
+import * as CashFreeService from "../services/CashFree.service.js";
 import * as cashfreeService from "../services/cashfree.service.js";
 import { confirmPaymentByOrderId } from "../services/paymentConfirmation.service.js";
 
@@ -72,7 +72,7 @@ export const createOrder = asyncHandler(async (req, res) => {
       if (!lockedProject || lockedProject.business_id !== req.user.id || lockedProject.status !== "ACCEPTED") {
         throw ApiError.badRequest("This project is no longer ready for checkout.");
       }
-      await projectsRepo.setRazorpayOrder(client, projectId, { orderId: order.orderId, businessFeePct: 8 });
+      await projectsRepo.setCashFreeOrder(client, projectId, { orderId: order.orderId, businessFeePct: 8 });
       await projectsRepo.updateStatus(projectId, "PENDING_FUNDS", client);
     });
   }
@@ -83,7 +83,7 @@ export const createOrder = asyncHandler(async (req, res) => {
       tier,
       billingPeriod: "MONTHLY",
       amount: amount / 100,
-      razorpayOrderId: order.orderId,
+      CashFreeOrderId: order.orderId,
     });
   }
 
@@ -92,10 +92,10 @@ export const createOrder = asyncHandler(async (req, res) => {
   });
 });
 
-// POST /api/payments/route-account — worker-only. Creates a Razorpay Route
+// POST /api/payments/route-account — worker-only. Creates a CashFree Route
 // linked account for this worker's payout destination. Only the returned
 // acc_XXXX id (plus status/email) is ever persisted — the raw bank account
-// number/IFSC the worker submitted go straight through to Razorpay in the
+// number/IFSC the worker submitted go straight through to CashFree in the
 // outbound request and are never written to any WorkBridge table (see
 // Privacy Policy §7 — WorkBridge stores a reference id, not bank details).
 //
@@ -110,9 +110,9 @@ export const createRouteAccount = asyncHandler(async (req, res) => {
   // DIFFERENT account after one already exists needs a fresh password
   // re-proof, not the first-ever link.
   const existing = await usersRepo.findById(req.user.id);
-  if (existing?.razorpay_account_id) requireReverify(req);
+  if (existing?.CashFree_account_id) requireReverify(req);
 
-  const account = await razorpayService.createLinkedAccount({
+  const account = await CashFreeService.createLinkedAccount({
     email,
     phone,
     beneficiaryName,
@@ -121,7 +121,7 @@ export const createRouteAccount = asyncHandler(async (req, res) => {
     bankIfsc,
   });
 
-  const updated = await usersRepo.setRazorpayAccount(req.user.id, {
+  const updated = await usersRepo.setCashFreeAccount(req.user.id, {
     accountId: account.id,
     status: "PENDING",
     email,
@@ -130,10 +130,10 @@ export const createRouteAccount = asyncHandler(async (req, res) => {
 
   res.status(201).json({
     data: {
-      razorpayAccountId: account.id,
+      CashFreeAccountId: account.id,
       status: "PENDING",
       // Real Route linked accounts need KYC (PAN/address proof) to reach
-      // ACTIVE — Razorpay's own hosted onboarding page handles document
+      // ACTIVE — CashFree's own hosted onboarding page handles document
       // upload/validation rather than WorkBridge re-implementing that
       // compliance surface itself.
       onboardingUrl: account.onboarding_url ?? null,
@@ -143,12 +143,12 @@ export const createRouteAccount = asyncHandler(async (req, res) => {
 
 // POST /api/payments/payout-account — worker-only. Saves the worker's
 // default payout destination (bank account+IFSC or a UPI VPA) so
-// completeProject/resolveDispute can pay them directly via RazorpayX at
-// completion, without needing the Razorpay Route linked-account flow
+// completeProject/resolveDispute can pay them directly via CashFreeX at
+// completion, without needing the CashFree Route linked-account flow
 // (createRouteAccount above), which stays blocked pending RBI review. Raw
 // bank details ARE persisted here (unlike Route, which never sees them
-// after handing them to Razorpay) since WorkBridge itself calls the
-// RazorpayX payout API with them directly — same shape/trust level as
+// after handing them to CashFree) since WorkBridge itself calls the
+// CashFreeX payout API with them directly — same shape/trust level as
 // withdrawal_requests.payout_details already stores per-withdrawal.
 export const savePayoutDetails = asyncHandler(async (req, res) => {
   const { payoutMethod, payoutDetails } = req.body;
@@ -172,20 +172,20 @@ export const getPayoutDetails = asyncHandler(async (req, res) => {
 
 // GET /api/payments/route-account — worker-only. DB-cached, kept current
 // by the account.* webhook events (webhook.controller.js) rather than a
-// live Razorpay API call on every page load.
+// live CashFree API call on every page load.
 export const getRouteAccount = asyncHandler(async (req, res) => {
   const user = await usersRepo.findById(req.user.id);
   res.json({
     data: {
-      razorpayAccountId: user.razorpay_account_id,
-      status: user.razorpay_account_status,
+      CashFreeAccountId: user.CashFree_account_id,
+      status: user.CashFree_account_status,
     },
   });
 });
 
 // POST /api/payments/subscription-checkout — either role. Body: { tier,
 // billingPeriod }. Manual pay-per-period, not a recurring auto-charge — a
-// plain one-time Razorpay order per period, reusing the exact same
+// plain one-time CashFree order per period, reusing the exact same
 // order-creation + webhook-confirmation path project checkout uses (see
 // createCheckoutOrder in projects.controller.js and handlePaymentCaptured
 // in webhook.controller.js, extended below to also recognize subscription
@@ -215,7 +215,7 @@ export const createSubscriptionCheckout = asyncHandler(async (req, res) => {
     tier,
     billingPeriod,
     amount,
-    razorpayOrderId: order.orderId,
+    CashFreeOrderId: order.orderId,
   });
 
   res.status(201).json({
@@ -240,8 +240,8 @@ export const getSubscriptionStatus = asyncHandler(async (req, res) => {
 
 // POST /api/payments/verify — recomputes the Checkout success-callback's
 // HMAC signature. A signature that verifies is real cryptographic proof
-// Razorpay itself issued this payment (only Razorpay and WorkBridge know
-// RAZORPAY_KEY_SECRET) — not a client claim — so on success this grants
+// CashFree itself issued this payment (only CashFree and WorkBridge know
+// CashFree_KEY_SECRET) — not a client claim — so on success this grants
 // FUNDS_SECURED / confirms the subscription immediately via the exact same
 // confirmPaymentByOrderId path the webhook uses, for a fast UI instead of
 // waiting on the webhook round-trip. The webhook still runs independently
@@ -250,14 +250,14 @@ export const getSubscriptionStatus = asyncHandler(async (req, res) => {
 // calling it twice for the same order a safe no-op the second time.
 export const verifyPayment = asyncHandler(async (req, res) => {
   const { orderId, paymentId, signature } = req.body;
-  const verified = razorpayService.verifyCheckoutSignature({ orderId, paymentId, signature });
+  const verified = CashFreeService.verifyCheckoutSignature({ orderId, paymentId, signature });
   if (verified) await confirmPaymentByOrderId({ orderId, paymentId });
   res.json({ data: { verified } });
 });
 
 export const verifyPaymentContract = asyncHandler(async (req, res) => {
-  const { razorpay_order_id: orderId, razorpay_payment_id: paymentId, razorpay_signature: signature } = req.body ?? {};
-  const verified = razorpayService.verifyCheckoutSignature({ orderId, paymentId, signature });
+  const { CashFree_order_id: orderId, CashFree_payment_id: paymentId, CashFree_signature: signature } = req.body ?? {};
+  const verified = CashFreeService.verifyCheckoutSignature({ orderId, paymentId, signature });
   if (verified) await confirmPaymentByOrderId({ orderId, paymentId });
   res.json({ data: { verified } });
 });

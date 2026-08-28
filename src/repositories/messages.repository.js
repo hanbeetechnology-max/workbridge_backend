@@ -8,14 +8,23 @@ import { query } from "../db/client.js";
 // written by the per-project routes or an attachment (a deliverable always
 // belongs to exactly one project), null for a general message sent through
 // the thread-wide route with no single project in mind.
-export async function create({ threadId, projectId = null, senderId, body }) {
+export async function create({ threadId, projectId = null, senderId, body, replyToMessageId = null }) {
   const { rows } = await query(
-    `INSERT INTO messages (thread_id, project_id, sender_id, body)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO messages (thread_id, project_id, sender_id, body, reply_to_message_id)
+     VALUES ($1, $2, $3, $4, $5)
      RETURNING *`,
-    [threadId, projectId, senderId, body]
+    [threadId, projectId, senderId, body, replyToMessageId]
   );
   return rows[0];
+}
+
+// Confirms a message being replied to actually belongs to the same thread
+// (or project, for the older per-project routes) the reply is being sent
+// into — never trusted blind from the client, same spirit as
+// sendThreadAttachmentMessage's projectId check in messages.controller.js.
+export async function findByIdInThread(id, threadId) {
+  const { rows } = await query(`SELECT id FROM messages WHERE id = $1 AND thread_id = $2`, [id, threadId]);
+  return rows[0] ?? null;
 }
 
 export async function createLinkedToSubmission(client, { threadId, projectId = null, senderId, body, submissionId }) {
@@ -70,10 +79,14 @@ export async function listForProject(projectId) {
             s.id AS submission_id, s.type AS submission_type, s.url AS submission_url,
             s.image_data AS submission_image_data, s.caption AS submission_caption,
             s.status AS submission_status, s.submitted_by AS submission_submitted_by,
-            s.rejection_reason AS submission_rejection_reason
+            s.rejection_reason AS submission_rejection_reason,
+            m.reply_to_message_id, ru.name AS reply_to_sender_name, r.body AS reply_to_body,
+            (r.submission_id IS NOT NULL) AS reply_to_is_attachment
      FROM messages m
      JOIN public_user_profiles u ON u.id = m.sender_id
      LEFT JOIN submissions s ON s.id = m.submission_id
+     LEFT JOIN messages r ON r.id = m.reply_to_message_id
+     LEFT JOIN public_user_profiles ru ON ru.id = r.sender_id
      WHERE m.project_id = $1
      ORDER BY m.created_at ASC`,
     [projectId]
@@ -91,10 +104,14 @@ export async function listForThread(threadId) {
             s.id AS submission_id, s.type AS submission_type, s.url AS submission_url,
             s.image_data AS submission_image_data, s.caption AS submission_caption,
             s.status AS submission_status, s.submitted_by AS submission_submitted_by,
-            s.rejection_reason AS submission_rejection_reason
+            s.rejection_reason AS submission_rejection_reason,
+            m.reply_to_message_id, ru.name AS reply_to_sender_name, r.body AS reply_to_body,
+            (r.submission_id IS NOT NULL) AS reply_to_is_attachment
      FROM messages m
      JOIN public_user_profiles u ON u.id = m.sender_id
      LEFT JOIN submissions s ON s.id = m.submission_id
+     LEFT JOIN messages r ON r.id = m.reply_to_message_id
+     LEFT JOIN public_user_profiles ru ON ru.id = r.sender_id
      WHERE m.thread_id = $1
      ORDER BY m.created_at ASC`,
     [threadId]

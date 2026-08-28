@@ -1,16 +1,16 @@
 import crypto from "node:crypto";
-import Razorpay from "razorpay";
+import CashFree from "CashFree";
 import { ApiError } from "../utils/ApiError.js";
 
 // Unlike push/email (silent no-op without config — see push.service.js),
-// a missing Razorpay key must fail loud: every caller here is moving real
+// a missing CashFree key must fail loud: every caller here is moving real
 // money, so a misconfigured server should refuse the action outright
 // rather than pretend to have taken it.
 function mustGetConfig() {
-  const keyId = process.env.RAZORPAY_KEY_ID?.trim();
-  const keySecret = process.env.RAZORPAY_KEY_SECRET?.trim();
+  const keyId = process.env.CashFree_KEY_ID?.trim();
+  const keySecret = process.env.CashFree_KEY_SECRET?.trim();
   if (!keyId || !keySecret) {
-    throw ApiError.internal("Razorpay is not configured on this server.");
+    throw ApiError.internal("CashFree is not configured on this server.");
   }
   return { keyId, keySecret };
 }
@@ -19,7 +19,7 @@ let client = null;
 function getClient() {
   if (!client) {
     const { keyId, keySecret } = mustGetConfig();
-    client = new Razorpay({ key_id: keyId, key_secret: keySecret });
+    client = new CashFree({ key_id: keyId, key_secret: keySecret });
   }
   return client;
 }
@@ -28,32 +28,32 @@ export function getPublicKeyId() {
   return mustGetConfig().keyId;
 }
 
-// The Razorpay SDK throws a raw {statusCode, error: {code, description,
+// The CashFree SDK throws a raw {statusCode, error: {code, description,
 // ...}} object, not an Error — left as-is, errorHandler.js treats anything
 // that isn't an ApiError as "unexpected" and hides it behind a generic
 // "Internal server error" (deliberate, so real bugs never leak internals
-// to a client). Razorpay's own `description` is safe and useful to show
+// to a client). CashFree's own `description` is safe and useful to show
 // (e.g. "Route feature not enabled for the merchant"), so every SDK call
 // in this file is wrapped through here to turn that shape into a proper
 // ApiError instead — this is the one, narrow exception to the generic
 // handler's leak-prevention, not a change to that handler's behavior for
 // every other error type in the app.
-async function callRazorpay(fn) {
+async function callCashFree(fn) {
   try {
     return await fn();
   } catch (err) {
     if (err?.error?.description) {
       const statusCode = Number.isInteger(err.statusCode) && err.statusCode >= 400 && err.statusCode < 500 ? err.statusCode : 502;
-      throw new ApiError(statusCode, err.error.description, { razorpayCode: err.error.code });
+      throw new ApiError(statusCode, err.error.description, { CashFreeCode: err.error.code });
     }
     throw err;
   }
 }
 
 // receipt is our own project id — lets us find the order back from
-// Razorpay's dashboard without a second lookup table.
+// CashFree's dashboard without a second lookup table.
 export async function createOrder({ amountPaise, receipt, notes }) {
-  return callRazorpay(() =>
+  return callCashFree(() =>
     getClient().orders.create({
       amount: amountPaise,
       currency: "INR",
@@ -64,7 +64,7 @@ export async function createOrder({ amountPaise, receipt, notes }) {
 }
 
 export async function fetchOrderPayments(orderId) {
-  return callRazorpay(() => getClient().orders.fetchPayments(orderId));
+  return callCashFree(() => getClient().orders.fetchPayments(orderId));
 }
 
 // Creates a Route linked account for a worker's payout destination.
@@ -73,7 +73,7 @@ export async function fetchOrderPayments(orderId) {
 // per-transfer approval from the receiving side, only this one-time
 // authorization to use the account as a payout destination at all.
 export async function createLinkedAccount({ email, phone, legalBusinessName, beneficiaryName, bankAccountNumber, bankIfsc }) {
-  return callRazorpay(() =>
+  return callCashFree(() =>
     getClient().accounts.create({
       email,
       phone,
@@ -97,25 +97,25 @@ export async function createLinkedAccount({ email, phone, legalBusinessName, ben
 }
 
 export async function fetchLinkedAccount(accountId) {
-  return callRazorpay(() => getClient().accounts.fetch(accountId));
+  return callCashFree(() => getClient().accounts.fetch(accountId));
 }
 
-async function razorpayXRequest(path, body, idempotencyKey) {
-  const keyId = process.env.RAZORPAYX_KEY_ID?.trim();
-  const keySecret = process.env.RAZORPAYX_KEY_SECRET?.trim();
-  if (!keyId || !keySecret || !process.env.RAZORPAYX_ACCOUNT_NUMBER?.trim()) {
-    throw ApiError.internal("RazorpayX payouts are not configured on this server.");
+async function CashFreeXRequest(path, body, idempotencyKey) {
+  const keyId = process.env.CashFreeX_KEY_ID?.trim();
+  const keySecret = process.env.CashFreeX_KEY_SECRET?.trim();
+  if (!keyId || !keySecret || !process.env.CashFreeX_ACCOUNT_NUMBER?.trim()) {
+    throw ApiError.internal("CashFreeX payouts are not configured on this server.");
   }
-  const response = await fetch(`https://api.razorpay.com/v1/${path}`, {
+  const response = await fetch(`https://api.CashFree.com/v1/${path}`, {
     method: "POST",
     headers: {
       Authorization: `Basic ${Buffer.from(`${keyId}:${keySecret}`).toString("base64")}`,
       "Content-Type": "application/json",
-      // RazorpayX's own idempotency mechanism — a retried call with the
+      // CashFreeX's own idempotency mechanism — a retried call with the
       // same key (network timeout, a duplicate click, this dev server's
       // node --watch restarting mid-request) returns the ORIGINAL payout
       // instead of creating a second real one. Without this, every retry
-      // was a genuinely new payout at Razorpay even when our own database
+      // was a genuinely new payout at CashFree even when our own database
       // write afterward failed and the request looked "still pending" —
       // exactly what caused two real ₹1,000 test payouts for one request.
       ...(idempotencyKey ? { "X-Payout-Idempotency": idempotencyKey } : {}),
@@ -124,22 +124,22 @@ async function razorpayXRequest(path, body, idempotencyKey) {
   });
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new ApiError(response.status >= 400 && response.status < 500 ? response.status : 502, payload?.error?.description || "RazorpayX payout failed.");
+    throw new ApiError(response.status >= 400 && response.status < 500 ? response.status : 502, payload?.error?.description || "CashFreeX payout failed.");
   }
   return payload;
 }
 
-export async function createRazorpayXPayout({ requestId, amountRupees, payoutMethod, payoutDetails, worker }) {
-  // Mocks only when explicitly requested (RAZORPAYX_MOCK=true) or when
-  // RazorpayX simply isn't configured on this machine — no longer gated on
-  // NODE_ENV, since local dev now runs against Razorpay's real sandbox
+export async function createCashFreeXPayout({ requestId, amountRupees, payoutMethod, payoutDetails, worker }) {
+  // Mocks only when explicitly requested (CashFreeX_MOCK=true) or when
+  // CashFreeX simply isn't configured on this machine — no longer gated on
+  // NODE_ENV, since local dev now runs against CashFree's real sandbox
   // (rzp_test_... keys, no real money moves) rather than always
-  // simulating. A dev without RazorpayX credentials set still gets a safe
+  // simulating. A dev without CashFreeX credentials set still gets a safe
   // fallback instead of a hard crash.
   const hasCredentials = Boolean(
-    process.env.RAZORPAYX_KEY_ID?.trim() && process.env.RAZORPAYX_KEY_SECRET?.trim() && process.env.RAZORPAYX_ACCOUNT_NUMBER?.trim()
+    process.env.CashFreeX_KEY_ID?.trim() && process.env.CashFreeX_KEY_SECRET?.trim() && process.env.CashFreeX_ACCOUNT_NUMBER?.trim()
   );
-  const mockEnabled = process.env.RAZORPAYX_MOCK === "true" || !hasCredentials;
+  const mockEnabled = process.env.CashFreeX_MOCK === "true" || !hasCredentials;
   if (mockEnabled) {
     return {
       id: `pout_mock_${requestId}_${Date.now()}`,
@@ -150,12 +150,12 @@ export async function createRazorpayXPayout({ requestId, amountRupees, payoutMet
     };
   }
 
-  const contact = await razorpayXRequest("contacts", {
+  const contact = await CashFreeXRequest("contacts", {
     name: worker.name,
     email: worker.email,
     contact: worker.phone,
     type: "employee",
-    // RazorpayX caps reference_id at 40 chars — a bare UUID is 36, so any
+    // CashFreeX caps reference_id at 40 chars — a bare UUID is 36, so any
     // added prefix (`worker_...`) pushed this over the limit and every
     // payout attempt failed with "reference id may not be greater than 40
     // characters." Kept short enough to leave room for callers who append
@@ -165,27 +165,27 @@ export async function createRazorpayXPayout({ requestId, amountRupees, payoutMet
 
   const details = String(payoutDetails).split(/[·,|]/).map((part) => part.trim()).filter(Boolean);
   const fundAccount = payoutMethod === "UPI"
-    ? await razorpayXRequest("fund_accounts", {
+    ? await CashFreeXRequest("fund_accounts", {
         contact_id: contact.id,
         account_type: "vpa",
         vpa: { address: String(payoutDetails).trim() },
       })
-    : await razorpayXRequest("fund_accounts", {
+    : await CashFreeXRequest("fund_accounts", {
         contact_id: contact.id,
         account_type: "bank_account",
         bank_account: { name: worker.name, ifsc: details.at(-1), account_number: details[0] },
       });
 
-  // requestId doubles as both reference_id (Razorpay's own display/lookup
+  // requestId doubles as both reference_id (CashFree's own display/lookup
   // field) and the idempotency key (the actual dedup mechanism) — it's
   // stable per real-world request (a withdrawal request's id, or
   // `${projectId}:payout`), so a retry of the SAME request reuses the SAME
-  // key and Razorpay returns the original payout instead of creating one.
+  // key and CashFree returns the original payout instead of creating one.
   const idempotencyKey = String(requestId).slice(0, 40);
-  return razorpayXRequest(
+  return CashFreeXRequest(
     "payouts",
     {
-      account_number: process.env.RAZORPAYX_ACCOUNT_NUMBER.trim(),
+      account_number: process.env.CashFreeX_ACCOUNT_NUMBER.trim(),
       fund_account_id: fundAccount.id,
       amount: Math.round(Number(amountRupees) * 100),
       currency: "INR",
@@ -204,9 +204,9 @@ export async function createRazorpayXPayout({ requestId, amountRupees, payoutMet
 // paymentId/amount the caller passes in. idempotencyKey is the caller's
 // own stable string (e.g. `${projectId}:payout`) so a retried call after a
 // network timeout can never create a second real transfer for the same
-// project — Razorpay dedupes on this key server-side.
+// project — CashFree dedupes on this key server-side.
 export async function createTransfer({ paymentId, accountId, amountPaise, notes, idempotencyKey }) {
-  return callRazorpay(() =>
+  return callCashFree(() =>
     getClient().payments.transfer(paymentId, {
       transfers: [
         {
@@ -217,12 +217,12 @@ export async function createTransfer({ paymentId, accountId, amountPaise, notes,
           on_hold: false,
         },
       ],
-    }, idempotencyKey ? { "X-Razorpay-Idempotency-Key": idempotencyKey } : undefined)
+    }, idempotencyKey ? { "X-CashFree-Idempotency-Key": idempotencyKey } : undefined)
   );
 }
 
 export async function createRefund({ paymentId, amountPaise, notes, idempotencyKey }) {
-  return callRazorpay(() =>
+  return callCashFree(() =>
     getClient().payments.refund(paymentId, {
       amount: amountPaise,
       notes,
@@ -231,14 +231,14 @@ export async function createRefund({ paymentId, amountPaise, notes, idempotencyK
   );
 }
 
-// Verifies the X-Razorpay-Signature header against the RAW request body
+// Verifies the X-CashFree-Signature header against the RAW request body
 // bytes (see app.js's express.raw() carve-out for this one route) — must
-// be the exact bytes Razorpay signed, not a JSON.stringify of the parsed
+// be the exact bytes CashFree signed, not a JSON.stringify of the parsed
 // body, which can differ in whitespace/key order and silently fail
 // verification. Timing-safe compare, not ===, so this can't leak the
 // expected signature via response-time side channel.
 export function verifyWebhookSignature(rawBody, signatureHeader) {
-  const secret = process.env.RAZORPAY_WEBHOOK_SECRET?.trim();
+  const secret = process.env.CashFree_WEBHOOK_SECRET?.trim();
   if (!secret || !signatureHeader) return false;
 
   const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
