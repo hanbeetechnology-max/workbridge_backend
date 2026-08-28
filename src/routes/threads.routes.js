@@ -7,6 +7,7 @@ import {
   listThreadMessages,
   sendThreadAttachmentMessage,
   sendThreadMessage,
+  startThreadWithWorker,
 } from "../controllers/messages.controller.js";
 
 // The entity-wide chat introduced by migrations/031_chat_threads.sql — one
@@ -18,6 +19,7 @@ export const threadsRouter = Router();
 threadsRouter.use(guard);
 
 threadsRouter.get("/", listMyThreads);
+threadsRouter.post("/with/:userId", startThreadWithWorker);
 threadsRouter.get("/:id/messages", listThreadMessages);
 threadsRouter.post("/:id/messages", validate(sendMessageSchema), sendThreadMessage);
 threadsRouter.post(

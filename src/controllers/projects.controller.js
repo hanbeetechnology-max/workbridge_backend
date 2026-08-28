@@ -169,6 +169,15 @@ function resolveApplicationDeadline(applicationWindowDays) {
 // Omitting workerId posts an OPEN job board listing; passing one keeps the
 // original direct-invite behavior (project starts INVITED).
 export const createProject = asyncHandler(async (req, res) => {
+  // req.user comes straight from the JWT (guard.js) — it's whatever was
+  // true at login, not live. verified can flip true AFTER a session already
+  // exists, so this has to be a fresh read, not req.user.verified (which
+  // doesn't even exist on the token). Frontend already hides this whole
+  // flow behind PostJobGate/BusinessWorkers' isVerified check — this is the
+  // server-side backstop so a direct API call can't skip it.
+  const business = await usersRepo.findById(req.user.id);
+  if (!business?.verified) throw ApiError.forbidden("Complete business verification before posting a job or inviting a worker.");
+
   const project = await projectsRepo.create({
     businessId: req.user.id,
     workerId: req.body.workerId,

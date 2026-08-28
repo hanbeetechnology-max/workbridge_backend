@@ -31,6 +31,11 @@ export const createCandidate = asyncHandler(async (req, res) => {
     if (project.business_id !== req.user.id) {
       throw ApiError.forbidden("You can only invite workers to your own job posts.");
     }
+    // Fresh read, not req.user (a JWT claim, set at login — verified can
+    // flip true after a session already exists). Server-side backstop for
+    // the same isVerified gate BusinessWorkers.jsx already enforces in the UI.
+    const business = await usersRepo.findById(req.user.id);
+    if (!business?.verified) throw ApiError.forbidden("Complete business verification before inviting a worker.");
     if (!req.body.workerId) {
       throw ApiError.badRequest("workerId is required when a business invites a worker.");
     }

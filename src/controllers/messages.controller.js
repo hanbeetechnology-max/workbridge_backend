@@ -233,6 +233,23 @@ export const listMyThreads = asyncHandler(async (req, res) => {
   res.json({ data: threads });
 });
 
+// POST /api/threads/with/:userId — business-only. Starts (or resumes) a
+// conversation with a worker who has no project relationship yet — e.g.
+// messaging from their profile before ever inviting them. Every other way
+// a thread gets created (createProject, respondToCandidate) requires a real
+// project first; this is the one cold-start path, so it's scoped to
+// business->worker only (a worker reaching out to a business they've never
+// worked with isn't a flow that exists elsewhere in the product either).
+export const startThreadWithWorker = asyncHandler(async (req, res) => {
+  if (req.user.role !== "business") throw ApiError.forbidden("Only businesses can start a conversation this way.");
+
+  const worker = await usersRepo.findById(req.params.userId);
+  if (!worker || worker.role !== "worker") throw ApiError.notFound("Worker not found.");
+
+  const thread = await threadsRepo.getOrCreateThread(req.user.id, worker.id);
+  res.status(201).json({ data: thread });
+});
+
 // GET /api/threads/:id/messages — the full relationship history, spanning
 // every project this pair has ever worked on together. Same visibility rule
 // as the per-project listMessages above.
