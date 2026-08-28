@@ -69,18 +69,18 @@ export function isAllowedOrigin(origin) {
 app.use(cors({ origin: (origin, callback) => callback(null, isAllowedOrigin(origin)) }));
 
 // Mounted directly on `app`, BEFORE the global express.json() below, and
-// completely outside apiRouter/guard — CashFree calls this server-to-
-// server with no JWT, only its own X-CashFree-Signature HMAC (verified in
+// completely outside apiRouter/guard — Razorpay calls this server-to-
+// server with no JWT, only its own X-Razorpay-Signature HMAC (verified in
 // webhook.controller.js against these exact raw bytes). If this sat under
 // apiRouter like every other route, the global JSON parser would already
 // have consumed and re-serialized the body by the time the handler saw
 // it, and a JSON.stringify of the parsed body is not guaranteed to match
-// the exact bytes CashFree signed — signature verification would be
+// the exact bytes Razorpay signed — signature verification would be
 // unreliable. express.raw() here is scoped to this one path only; every
 // other route still gets a normal parsed JSON body via the line below.
 app.use("/api/payments/webhook", express.raw({ type: "application/json" }), webhookRouter);
 
-// Same raw-body-before-json shape as the CashFree webhook above, ahead of
+// Same raw-body-before-json shape as the Razorpay webhook above, ahead of
 // real Cashfree Payouts credentials existing — see
 // cashfreeWebhook.controller.js for what this does and doesn't do yet.
 app.use("/api/webhooks/cashfree", express.raw({ type: "application/json" }), cashfreeWebhookRouter);

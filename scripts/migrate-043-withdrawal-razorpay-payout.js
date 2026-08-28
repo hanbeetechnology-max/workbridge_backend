@@ -23,12 +23,12 @@ const pool = new pg.Pool({
 });
 
 try {
-  const migrationPath = path.resolve(__dirname, "../migrations/043_withdrawal_CashFree_payout.sql");
+  const migrationPath = path.resolve(__dirname, "../migrations/043_withdrawal_razorpay_payout.sql");
   const sql = readFileSync(migrationPath, "utf8");
 
-  console.log(`Applying migrations/043_withdrawal_CashFree_payout.sql to ${dbHost}...`);
+  console.log(`Applying migrations/043_withdrawal_razorpay_payout.sql to ${dbHost}...`);
   await pool.query(sql);
-  console.log("Migration applied successfully — withdrawal_requests gained CashFree_payout_id.");
+  console.log("Migration applied successfully — withdrawal_requests gained razorpay_payout_id.");
 } catch (err) {
   console.error("Migration failed:");
   console.error(err);

@@ -28,7 +28,7 @@ try {
 
   console.log(`Applying migrations/044_worker_payout_account.sql to ${dbHost}...`);
   await pool.query(sql);
-  console.log("Migration applied successfully — users gained payout_method/payout_details, transactions.settlement_method allows CashFreeX_PAYOUT.");
+  console.log("Migration applied successfully — users gained payout_method/payout_details, transactions.settlement_method allows RAZORPAYX_PAYOUT.");
 } catch (err) {
   console.error("Migration failed:");
   console.error(err);

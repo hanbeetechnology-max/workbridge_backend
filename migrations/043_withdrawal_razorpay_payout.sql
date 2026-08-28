@@ -1,1 +1,1 @@
-ALTER TABLE withdrawal_requests ADD COLUMN IF NOT EXISTS CashFree_payout_id TEXT;
+ALTER TABLE withdrawal_requests ADD COLUMN IF NOT EXISTS razorpay_payout_id TEXT;

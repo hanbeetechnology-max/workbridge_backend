@@ -7,7 +7,7 @@ export const verifyPaymentSchema = z.object({
 });
 
 // IFSC: 4 letters (bank code) + 0 + 6 alphanumerics (branch code) — the
-// standard Indian bank format CashFree itself validates against.
+// standard Indian bank format Razorpay itself validates against.
 const ifscSchema = z
   .string()
   .trim()
@@ -22,7 +22,7 @@ export const subscriptionCheckoutSchema = z.object({
 // UPI VPA (e.g. name@bank) or a "accountNumber · ifsc" string — same free-form
 // shape wallet.controller.js's withdraw already accepts for payoutDetails,
 // validated loosely here since the real check (does this account exist) can
-// only happen at CashFree's end when a payout is actually attempted.
+// only happen at Razorpay's end when a payout is actually attempted.
 export const payoutAccountSchema = z.object({
   payoutMethod: z.enum(["UPI", "BANK_TRANSFER"]),
   payoutDetails: z.string().trim().min(3).max(200),

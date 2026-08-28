@@ -26,7 +26,7 @@ export async function findByIdForUpdate(client, id) {
 export async function markResolved(client, id, { status, adminNote, resolvedBy, payoutId }) {
   const { rows } = await client.query(
     `UPDATE withdrawal_requests
-     SET status = $2, admin_note = $3, resolved_by = $4, CashFree_payout_id = $5, resolved_at = now()
+     SET status = $2, admin_note = $3, resolved_by = $4, razorpay_payout_id = $5, resolved_at = now()
      WHERE id = $1
      RETURNING *`,
     [id, status, adminNote ?? null, resolvedBy, payoutId ?? null]

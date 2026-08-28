@@ -16,7 +16,7 @@ const BUSINESS_FEE_PCT_FALLBACK = 8;
 // captured payment: the signature-verified success callback
 // (payments.controller.js's verifyPayment/verifyPaymentContract) and the
 // server-to-server webhook (webhook.controller.js). A verified HMAC
-// signature is real cryptographic proof CashFree issued the payment, so
+// signature is real cryptographic proof Razorpay issued the payment, so
 // verify is allowed to grant funds immediately for a fast UI — the webhook
 // still runs independently afterwards as an idempotent backstop for the
 // case where the browser never calls verify (tab closed, network drop),
@@ -24,7 +24,7 @@ const BUSINESS_FEE_PCT_FALLBACK = 8;
 // trust, not two that could drift.
 export async function confirmProjectPayment({ orderId, paymentId }) {
   const result = await transaction(async (client) => {
-    const project = await projectsRepo.findByCashFreeOrderId(client, orderId);
+    const project = await projectsRepo.findByRazorpayOrderId(client, orderId);
     if (!project) return null;
     if (project.status !== "PENDING_FUNDS") return { project, alreadyProcessed: true };
 
@@ -43,7 +43,7 @@ export async function confirmProjectPayment({ orderId, paymentId }) {
         direction: "debit",
         amount: budget,
         fundsStatus: "HELD",
-        referenceNote: `Funds secured via CashFree (payment ${paymentId}) – ${project.title}`,
+        referenceNote: `Funds secured via Razorpay (payment ${paymentId}) – ${project.title}`,
       },
       client
     );
@@ -91,7 +91,7 @@ function computePeriodEnd(billingPeriod, from) {
 
 export async function confirmSubscriptionPayment({ orderId, paymentId }) {
   return await transaction(async (client) => {
-    const subPayment = await subscriptionPaymentsRepo.findByCashFreeOrderId(client, orderId);
+    const subPayment = await subscriptionPaymentsRepo.findByRazorpayOrderId(client, orderId);
     if (!subPayment) return false;
     if (subPayment.status !== "PENDING") return true;
 

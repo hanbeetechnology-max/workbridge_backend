@@ -283,7 +283,7 @@ export const googleAuth = asyncHandler(async (req, res) => {
       // Brand new account. `role` only matters on this branch — see the
       // function comment above.
       if (role !== "worker" && role !== "business") {
-        throw ApiError.badRequest("Choose Worker or Business to finish creating your account.");
+        throw ApiError.badRequest("Choose Freelancer or Business to finish creating your account.");
       }
       const passwordHash = await generateUnusablePasswordHash();
       try {

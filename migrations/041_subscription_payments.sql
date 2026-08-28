@@ -1,4 +1,4 @@
--- Manual pay-per-period subscription payments — a plain one-time CashFree
+-- Manual pay-per-period subscription payments — a plain one-time Razorpay
 -- Checkout charge per billing period, NOT a recurring auto-charge (that
 -- would need a UPI Autopay/NACH e-mandate, a separate regulated flow).
 -- The user re-visits and pays again each period; nothing auto-bills them.
@@ -19,8 +19,8 @@ CREATE TABLE subscription_payments (
   tier               subscription_tier NOT NULL,
   billing_period     subscription_billing_period NOT NULL,
   amount             NUMERIC(12, 2) NOT NULL CHECK (amount > 0),
-  CashFree_order_id  TEXT UNIQUE,
-  CashFree_payment_id TEXT,
+  razorpay_order_id  TEXT UNIQUE,
+  razorpay_payment_id TEXT,
   status             subscription_payment_status NOT NULL DEFAULT 'PENDING',
   period_start       TIMESTAMPTZ,
   period_end         TIMESTAMPTZ,

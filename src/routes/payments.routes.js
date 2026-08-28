@@ -3,7 +3,7 @@ import { guard, requireRole } from "../middleware/guard.js";
 import { validate } from "../middleware/validate.js";
 import { payoutAccountSchema, subscriptionCheckoutSchema, verifyPaymentSchema } from "../validators/payments.validators.js";
 import {
-  // createRouteAccount, getRouteAccount — CashFree Route linked-account
+  // createRouteAccount, getRouteAccount — Razorpay Route linked-account
   // feature, disabled below. Cashfree has no equivalent (confirmed: only
   // Easy Split is Route-like and neither worker nor business side needs
   // it — see project_cashfree_master_verification_flow memory), and this
@@ -18,7 +18,7 @@ import {
 } from "../controllers/payments.controller.js";
 
 // JWT-guarded, unlike webhook.routes.js — everything here is a normal
-// authenticated user action, not a CashFree-to-server callback.
+// authenticated user action, not a payment-provider-to-server callback.
 export const paymentsRouter = Router();
 
 paymentsRouter.use(guard);
