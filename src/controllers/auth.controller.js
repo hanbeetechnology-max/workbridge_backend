@@ -23,8 +23,38 @@ function toSelf(user) {
   return safe;
 }
 
+// A business team member's row has no verified/subscription_tier/company
+// profile of its own — that's all on the OWNER's row, which is what
+// req.user.id resolves to for them (see guard.js). Rather than show the
+// frontend a team member's own (unverified, FREE-tier, blank-profile) row
+// and break every "is this business verified/Enterprise" check across the
+// app, this merges the owner's real business state with the team member's
+// own personal identity (name/email/phone/avatar — who's actually signed
+// in on this device), so the UI stays both correct and personal.
+export function toTeamMemberSelf(ownerRow, memberRow) {
+  const { password_hash, ...ownerSafe } = ownerRow;
+  return {
+    ...ownerSafe,
+    name: memberRow.name,
+    email: memberRow.email,
+    phone: memberRow.phone,
+    avatar_url: memberRow.avatar_url,
+    isTeamMember: true,
+    teamMemberId: memberRow.id,
+  };
+}
+
 function issueToken(user) {
-  return jwt.sign({ sub: user.id, role: user.role }, mustGetJwtSecret(), { expiresIn: TOKEN_TTL });
+  // A team member's row (migrations/051_business_team_members.sql) signs
+  // its session with the OWNER's id as `sub` — every existing business
+  // feature keeps using req.user.id unchanged and transparently operates
+  // as the shared business. teamMemberId carries the real individual's own
+  // id for the few endpoints that must never resolve to the owner (guard.js
+  // reads it back into req.user.teamMemberId).
+  const claims = user.business_owner_id
+    ? { sub: user.business_owner_id, role: user.role, teamMemberId: user.id }
+    : { sub: user.id, role: user.role };
+  return jwt.sign(claims, mustGetJwtSecret(), { expiresIn: TOKEN_TTL });
 }
 
 function generateOtpCode() {
@@ -273,6 +303,24 @@ export const login = asyncHandler(async (req, res) => {
   // compares against the previous one and updates current_streak/
   // last_login_at atomically (see users.repository.js's recordLogin).
   const loggedInUser = await usersRepo.recordLogin(user.id);
+
+  // Multi-User Access (migrations/051_business_team_members.sql) is an
+  // Enterprise-tier perk, not a permanent grant — re-checked at every
+  // login (not on every request; a 7-day token can outlive a same-session
+  // downgrade, an accepted tradeoff for not adding a DB round trip to
+  // every guarded request) so a lapsed/downgraded plan actually stops new
+  // team-member sign-ins rather than silently keeping seats forever.
+  if (loggedInUser.business_owner_id) {
+    const owner = await usersRepo.findById(loggedInUser.business_owner_id);
+    const ownerTierActive =
+      owner?.subscription_tier === "ENTERPRISE" && owner?.subscription_expires_at && new Date(owner.subscription_expires_at) > new Date();
+    if (!owner || !owner.is_active || !ownerTierActive) {
+      throw ApiError.forbidden("Your business's Enterprise plan isn't active — team access is paused. Contact your business owner.");
+    }
+    res.json({ data: { token: issueToken(loggedInUser), user: toTeamMemberSelf(owner, loggedInUser) } });
+    return;
+  }
+
   res.json({ data: { token: issueToken(loggedInUser), user: toSelf(loggedInUser) } });
 });
 
@@ -444,8 +492,17 @@ export const resetPassword = asyncHandler(async (req, res) => {
 });
 
 // GET /api/auth/me — behind `guard`. req.user.id comes from the verified
-// JWT, never a client-supplied param.
+// JWT, never a client-supplied param. For a business team member,
+// req.user.id is the OWNER's id (shared business identity) — this merges
+// in their own real name/email/phone (see toTeamMemberSelf) rather than
+// showing them the owner's.
 export const me = asyncHandler(async (req, res) => {
+  if (req.user.teamMemberId) {
+    const [owner, member] = await Promise.all([usersRepo.findById(req.user.id), usersRepo.findById(req.user.teamMemberId)]);
+    if (!owner || !member) throw ApiError.notFound("User not found.");
+    res.json({ data: toTeamMemberSelf(owner, member) });
+    return;
+  }
   const user = await usersRepo.findById(req.user.id);
   if (!user) throw ApiError.notFound("User not found.");
   res.json({ data: toSelf(user) });
@@ -459,7 +516,11 @@ export const me = asyncHandler(async (req, res) => {
 export const changePassword = asyncHandler(async (req, res) => {
   const { currentPassword, newPassword } = req.body;
 
-  const user = await usersRepo.findById(req.user.id);
+  // Always the real logged-in individual's own row — for a team member,
+  // req.user.id is the shared business (owner) id, and this must never be
+  // able to touch the owner's password (see guard.js/issueToken).
+  const selfId = req.user.teamMemberId ?? req.user.id;
+  const user = await usersRepo.findById(selfId);
   if (!user) throw ApiError.notFound("User not found.");
 
   // Google-only accounts (has_usable_password = false) hold a random,
@@ -496,7 +557,13 @@ export const verifyPasswordForReauth = asyncHandler(async (req, res) => {
   const { password } = req.body ?? {};
   if (!password) throw ApiError.badRequest("Enter your password.");
 
-  const user = await usersRepo.findById(req.user.id);
+  // The real logged-in individual's own password (a team member doesn't
+  // know the owner's) — but the issued token's `sub` below deliberately
+  // stays req.user.id (the shared business id), since that's what
+  // requireReverify compares against for the actual business-level action
+  // this gates (e.g. changing a saved payout destination).
+  const selfId = req.user.teamMemberId ?? req.user.id;
+  const user = await usersRepo.findById(selfId);
   if (!user) throw ApiError.notFound("User not found.");
 
   if (!user.has_usable_password) {
@@ -506,7 +573,7 @@ export const verifyPasswordForReauth = asyncHandler(async (req, res) => {
   const matches = await bcrypt.compare(password, user.password_hash);
   if (!matches) throw ApiError.unauthorized("Incorrect password.");
 
-  const reverifyToken = jwt.sign({ sub: user.id, purpose: "reverify" }, mustGetJwtSecret(), { expiresIn: `${REVERIFY_TTL_MINUTES}m` });
+  const reverifyToken = jwt.sign({ sub: req.user.id, purpose: "reverify" }, mustGetJwtSecret(), { expiresIn: `${REVERIFY_TTL_MINUTES}m` });
   res.json({ data: { reverifyToken, expiresInSeconds: REVERIFY_TTL_MINUTES * 60 } });
 });
 
@@ -514,6 +581,12 @@ export const verifyPasswordForReauth = asyncHandler(async (req, res) => {
 // toggles. Merges into the existing JSONB (see usersRepo.updateNotificationPrefs)
 // so toggling one category never resets the others.
 export const updateNotificationPrefs = asyncHandler(async (req, res) => {
+  // Deliberately shared (req.user.id, not the team member's own row) —
+  // push subscriptions (push.controller.js) and the notification feed
+  // itself (notifications.controller.js) are both keyed by the shared
+  // business id, so prefs have to live there too or a team member's
+  // toggle would silently do nothing (checked against a row nothing ever
+  // reads).
   const updated = await usersRepo.updateNotificationPrefs(req.user.id, req.body);
   const { password_hash, ...safe } = updated;
   res.json({ data: safe });
@@ -526,7 +599,12 @@ export const updateNotificationPrefs = asyncHandler(async (req, res) => {
 // real account deletion, which the schema's ON DELETE RESTRICT foreign keys
 // don't actually support.
 export const deactivateSelf = asyncHandler(async (req, res) => {
-  await transaction((client) => usersRepo.setActive(client, req.user.id, false));
+  // Must never resolve to the owner for a team member — req.user.id is the
+  // shared business id; deactivating THAT would take down the whole
+  // business account, not just this one login. A team member who wants to
+  // leave deactivates only their own row.
+  const selfId = req.user.teamMemberId ?? req.user.id;
+  await transaction((client) => usersRepo.setActive(client, selfId, false));
   res.json({ data: { message: "Account deactivated." } });
 });
 

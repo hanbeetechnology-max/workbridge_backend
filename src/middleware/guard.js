@@ -23,7 +23,22 @@ export function verifyAccessToken(token) {
   // presence here is proof "an admin is driving this account right now."
   // Only spread onto req.user when actually present, not as an explicit
   // `undefined` key on every normal request.
-  return { id: payload.sub, role: payload.role, ...(payload.impersonatorId ? { impersonatorId: payload.impersonatorId } : {}) };
+  //
+  // teamMemberId only ever appears on a token issued to a business team
+  // member (migrations/051_business_team_members.sql) — `sub` is
+  // deliberately the OWNER's id there (see auth.controller.js's
+  // issueToken), so req.user.id transparently IS the shared business
+  // identity for every existing feature (jobs, chats, subscription,
+  // verification — no other file needed to change). teamMemberId is the
+  // one place that real individual's own row id survives, for the handful
+  // of "this is MY OWN login" endpoints that must never resolve to the
+  // owner (change password, deactivate, notification prefs, own profile).
+  return {
+    id: payload.sub,
+    role: payload.role,
+    ...(payload.impersonatorId ? { impersonatorId: payload.impersonatorId } : {}),
+    ...(payload.teamMemberId ? { teamMemberId: payload.teamMemberId } : {}),
+  };
 }
 
 // Verifies the Bearer JWT and attaches { id, role } to req.user. Applied to
@@ -45,10 +60,20 @@ export const guard = asyncHandler(async (req, _res, next) => {
   // A ban (Security Monitor's "Ban User" action) needs to stop someone
   // immediately, not just block their next login — an already-issued JWT
   // stays cryptographically valid until it expires, so this is checked on
-  // every request, not only at sign-in.
-  const active = await usersRepo.isActive(req.user.id);
+  // every request, not only at sign-in. For a team member, req.user.id is
+  // the OWNER's id (see verifyAccessToken above) — checking only that
+  // would miss the owner removing THIS specific team member (Team Access'
+  // "Remove" sets the member's own is_active false, not the owner's), so
+  // both rows are checked whenever teamMemberId is present.
+  const [active, memberActive] = await Promise.all([
+    usersRepo.isActive(req.user.id),
+    req.user.teamMemberId ? usersRepo.isActive(req.user.teamMemberId) : Promise.resolve(true),
+  ]);
   if (!active) {
     throw ApiError.forbidden("This account has been suspended.");
+  }
+  if (!memberActive) {
+    throw ApiError.forbidden("Your access to this business account has been removed.");
   }
 
   // Impersonation ("See what they see" — POST /api/admin/impersonate) is

@@ -28,6 +28,7 @@
     "migrate:dispute-rebuttal-evidence": "node scripts/migrate-048-dispute-rebuttal-evidence.js",
     "migrate:admin-team-management": "node scripts/migrate-049-admin-team-management.js",
     "migrate:open-post-tracking": "node scripts/migrate-050-open-post-tracking.js",
+    "migrate:business-team-members": "node scripts/migrate-051-business-team-members.js",
     "test": "node --test"
   },
   "dependencies": {

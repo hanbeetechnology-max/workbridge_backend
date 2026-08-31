@@ -41,6 +41,46 @@ export async function setAdminActive(client, id, isActive) {
   return rows[0] ?? null;
 }
 
+// Business Team Access (migrations/051_business_team_members.sql) — every
+// team member row this owner has ever created, active or removed (same
+// "show who's been removed, not just who's active" precedent as
+// listAdmins above). Ordered newest-first.
+export async function listTeamMembers(ownerId) {
+  const { rows } = await query(
+    `SELECT id, name, email, phone, is_active, created_at
+     FROM users WHERE business_owner_id = $1 ORDER BY created_at DESC`,
+    [ownerId]
+  );
+  return rows;
+}
+
+// role is always 'business' — a team member logs in and, per
+// auth.controller.js's issueToken, transparently gets the owner's full
+// business session (jobs, candidates, chats, subscription — everything).
+// email_verified/has_usable_password default TRUE (owner-created, no OTP
+// step needed), same convention as insertAdmin above.
+export async function insertTeamMember(client, { ownerId, name, email, phone, passwordHash }) {
+  const { rows } = await client.query(
+    `INSERT INTO users (role, name, email, password_hash, phone, business_owner_id)
+     VALUES ('business', $1, $2, $3, $4, $5)
+     RETURNING id, name, email, phone, is_active, created_at`,
+    [name, email, passwordHash, phone ?? null, ownerId]
+  );
+  return rows[0];
+}
+
+// Scoped to `owner_id` so one business can never remove another's team
+// member by guessing an id — mirrors setAdminActive's WHERE role = 'admin'
+// scoping.
+export async function setTeamMemberActive(client, id, ownerId, isActive) {
+  const { rows } = await client.query(
+    `UPDATE users SET is_active = $3 WHERE id = $1 AND business_owner_id = $2
+     RETURNING id, name, email, phone, is_active, created_at`,
+    [id, ownerId, isActive]
+  );
+  return rows[0] ?? null;
+}
+
 // CITEXT on users.email makes this comparison case-insensitive at the DB
 // level already — no need to lower() here.
 export async function findByEmail(email) {

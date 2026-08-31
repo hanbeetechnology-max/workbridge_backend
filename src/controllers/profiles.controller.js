@@ -1,6 +1,7 @@
 import { ApiError } from "../utils/ApiError.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import * as usersRepo from "../repositories/users.repository.js";
+import { toTeamMemberSelf } from "./auth.controller.js";
 
 // GET /api/profiles/:id — the ONE unauthenticated read in this API.
 // Queries public_user_profiles (schema.sql), a view with no email/phone
@@ -25,17 +26,28 @@ export const listPublicProfiles = asyncHandler(async (req, res) => {
 // :id param here, so a caller can never edit anyone else's profile.
 export const updateOwnProfile = asyncHandler(async (req, res) => {
   const { avatarUrl, title, phone, name, profilePatch, hasCompletedOnboarding } = req.body;
-  const updated = await usersRepo.updateSelf(req.user.id, {
-    avatarUrl,
-    title,
-    phone,
-    name,
-    profilePatch,
-    hasCompletedOnboarding,
-  });
-  if (!updated) throw ApiError.notFound("User not found.");
-  const { password_hash, ...safe } = updated;
-  res.json({ data: safe });
+  const selfId = req.user.teamMemberId ?? req.user.id;
+  const hasProfilePatch = profilePatch && Object.keys(profilePatch).length > 0;
+
+  // Personal identity (name/phone/avatar/title) always belongs to the real
+  // individual — a team member must never silently overwrite the owner's.
+  // profilePatch (company bio/industry/tagline for a business, or a
+  // worker's own skills/rate) is the shared business identity, so for a
+  // team member it's routed to the owner's row instead of their own.
+  const selfUpdated = await usersRepo.updateSelf(selfId, { avatarUrl, title, phone, name, hasCompletedOnboarding });
+  if (!selfUpdated) throw ApiError.notFound("User not found.");
+
+  if (!req.user.teamMemberId) {
+    const finalRow = hasProfilePatch ? await usersRepo.updateSelf(selfId, { profilePatch }) : selfUpdated;
+    const { password_hash, ...safe } = finalRow;
+    res.json({ data: safe });
+    return;
+  }
+
+  const owner = hasProfilePatch
+    ? await usersRepo.updateSelf(req.user.id, { profilePatch })
+    : await usersRepo.findById(req.user.id);
+  res.json({ data: toTeamMemberSelf(owner, selfUpdated) });
 });
 
 // PATCH /api/profiles/me/badge — self only, same as updateOwnProfile above.
@@ -45,16 +57,17 @@ export const updateOwnProfile = asyncHandler(async (req, res) => {
 // (never trust the client's own claim of what level it is).
 export const setPinnedBadge = asyncHandler(async (req, res) => {
   const { level } = req.body;
+  const selfId = req.user.teamMemberId ?? req.user.id;
 
   if (level !== null) {
-    const user = await usersRepo.findById(req.user.id);
+    const user = await usersRepo.findById(selfId);
     if (!user) throw ApiError.notFound("User not found.");
     if (user.current_level < level) {
       throw ApiError.badRequest(`You haven't reached Level ${level} yet.`);
     }
   }
 
-  const updated = await usersRepo.setPinnedBadge(req.user.id, level);
+  const updated = await usersRepo.setPinnedBadge(selfId, level);
   if (!updated) throw ApiError.notFound("User not found.");
   res.json({ data: { pinnedMilestoneLevel: updated.pinned_milestone_level } });
 });

@@ -155,6 +155,12 @@ CREATE TABLE users (
   -- migrations/034_admin_permissions.sql.
   can_ban_users     BOOLEAN NOT NULL DEFAULT TRUE,
   can_release_funds BOOLEAN NOT NULL DEFAULT TRUE,
+  -- migrations/051_business_team_members.sql — real Enterprise-tier
+  -- "Multi-User Access for your HR team" perk. Set only on a team member's
+  -- own row, pointing back at the real business owner's user id — see
+  -- auth.controller.js's login()/issueToken() for how this makes every
+  -- existing business feature transparently operate as the shared business.
+  business_owner_id UUID REFERENCES users(id) ON DELETE CASCADE,
   behavior_score    SMALLINT,                       -- 0–1000 trust metric; workers/businesses only
   rating            NUMERIC(3, 2),                  -- cached avg of reviews.rating for this user
   reviews_count     INTEGER NOT NULL DEFAULT 0,
@@ -206,6 +212,7 @@ CREATE TABLE users (
 );
 
 CREATE INDEX idx_users_role ON users (role);
+CREATE INDEX idx_users_business_owner_id ON users (business_owner_id) WHERE business_owner_id IS NOT NULL;
 
 -- Originally the registration-OTP store; superseded there by
 -- pending_signups below (which holds the OTP alongside the rest of a

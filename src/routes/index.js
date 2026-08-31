@@ -15,6 +15,7 @@ import { publicRouter } from "./public.routes.js";
 import { notificationsRouter } from "./notifications.routes.js";
 import { threadsRouter } from "./threads.routes.js";
 import { paymentsRouter } from "./payments.routes.js";
+import { businessRouter } from "./business.routes.js";
 
 export const apiRouter = Router();
 
@@ -38,6 +39,7 @@ apiRouter.use("/threads", threadsRouter);
 // parser, so its raw request body survives for signature verification.
 // This router only ever carries normal JWT-guarded endpoints.
 apiRouter.use("/payments", paymentsRouter);
+apiRouter.use("/business", businessRouter);
 
 // Dev-only token issuance — never mounted in production. See dev.routes.js.
 if (process.env.NODE_ENV !== "production") {
