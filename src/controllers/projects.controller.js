@@ -180,6 +180,24 @@ export const createProject = asyncHandler(async (req, res) => {
   const business = await usersRepo.findById(req.user.id);
   if (!business?.verified) throw ApiError.forbidden("Complete business verification before posting a job or inviting a worker.");
 
+  // Real effect of the subscription tier cards' "N posts/month" — GROWTH/
+  // ENTERPRISE prices were already live via Cashfree; this is what those
+  // prices were actually buying. FREE=2, GROWTH=20, ENTERPRISE=unlimited.
+  const tierIsActive = business.subscription_tier !== "FREE" && business.subscription_expires_at && new Date(business.subscription_expires_at) > new Date();
+  const effectiveTier = tierIsActive ? business.subscription_tier : "FREE";
+  const MONTHLY_POST_LIMIT = { FREE: 2, GROWTH: 20, ENTERPRISE: Infinity };
+  const limit = MONTHLY_POST_LIMIT[effectiveTier] ?? MONTHLY_POST_LIMIT.FREE;
+  // Direct invites (req.body.workerId set) never count against this limit —
+  // it only caps broadcast job-board posts, per countOpenPostsThisMonth.
+  if (limit !== Infinity && !req.body.workerId) {
+    const postedThisMonth = await projectsRepo.countOpenPostsThisMonth(req.user.id);
+    if (postedThisMonth >= limit) {
+      throw ApiError.forbidden(
+        `You've used all ${limit} job posts included in your ${effectiveTier === "FREE" ? "Free" : "Growth"} plan this month. Upgrade for more.`
+      );
+    }
+  }
+
   const project = await projectsRepo.create({
     businessId: req.user.id,
     workerId: req.body.workerId,

@@ -345,6 +345,11 @@ CREATE TABLE projects (
   timeline          JSONB NOT NULL DEFAULT '[]',
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- migrations/050_open_post_tracking.sql — set once at INSERT (true iff
+  -- created with no workerId), never changed afterward. Real effect of the
+  -- business subscription tiers' "N job posts/month" limit; worker_id alone
+  -- can't answer "was this originally an open post" once it gets filled.
+  posted_as_open    BOOLEAN NOT NULL DEFAULT false,
 
   CONSTRAINT chk_worker_business_distinct CHECK (worker_id <> business_id),
   CONSTRAINT chk_experience_range
@@ -355,6 +360,7 @@ CREATE INDEX idx_projects_business_id ON projects (business_id);
 CREATE INDEX idx_projects_worker_id   ON projects (worker_id);
 CREATE INDEX idx_projects_status      ON projects (status);
 CREATE INDEX idx_projects_is_urgent   ON projects (is_urgent) WHERE is_urgent = true;
+CREATE INDEX idx_projects_business_open_created ON projects (business_id, posted_as_open, created_at);
 
 CREATE TRIGGER trg_projects_updated_at
   BEFORE UPDATE ON projects

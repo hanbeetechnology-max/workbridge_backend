@@ -170,10 +170,33 @@ export async function listOpen(viewerLevel = 0) {
   return rows;
 }
 
+// Real effect of the business subscription tiers' "N posts/month" limit
+// (BusinessPayments.jsx's SubscriptionTab) — calendar-month count of OPEN
+// job-board posts only (workerId omitted at creation — see createProject).
+// A direct invite (a specific worker you already found via Find Workers)
+// doesn't count — it's naturally self-limiting already, and the tier's
+// real differentiator is broadcast reach on the job board, not 1:1
+// outreach. Uses posted_as_open (set once at INSERT, immutable) rather
+// than worker_id, which changes the moment a candidate is accepted — an
+// OPEN post that gets filled must still count toward the month it was
+// actually posted in. Calendar month in the DB's own timezone
+// (date_trunc), not a rolling 30 days — resets on the 1st, same as every
+// other "N/month" quota.
+export async function countOpenPostsThisMonth(businessId) {
+  const { rows } = await query(
+    `SELECT COUNT(*)::int AS count FROM projects
+     WHERE business_id = $1 AND posted_as_open = TRUE AND created_at >= date_trunc('month', now())`,
+    [businessId]
+  );
+  return rows[0].count;
+}
+
 // workerId is nullable — a business "casting the net" post is created with
 // workerId omitted (status defaults to OPEN below); the existing direct-
 // invite flow still passes a real workerId (status defaults to INVITED,
-// same as before this feature existed).
+// same as before this feature existed). posted_as_open is derived from
+// workerId at this one moment and never changes afterward, even once the
+// post gets filled and worker_id is set — see countOpenPostsThisMonth.
 export async function create({
   businessId,
   workerId,
@@ -192,12 +215,13 @@ export async function create({
   isUrgent,
 }) {
   const resolvedStatus = status ?? (workerId ? "INVITED" : "OPEN");
+  const postedAsOpen = !workerId;
   const { rows } = await query(
     `INSERT INTO projects (
        business_id, worker_id, title, description, budget, deadline, status, application_deadline, estimated_duration,
-       min_experience_years, max_experience_years, education_level, education_notes, required_skills, is_urgent
+       min_experience_years, max_experience_years, education_level, education_notes, required_skills, is_urgent, posted_as_open
      )
-     VALUES ($1, $2, $3, $4, $5, $6, $7::project_status, $8, $9, $10, $11, $12::education_level, $13, $14, $15)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::project_status, $8, $9, $10, $11, $12::education_level, $13, $14, $15, $16)
      RETURNING *`,
     [
       businessId,
@@ -215,6 +239,7 @@ export async function create({
       educationNotes ?? null,
       requiredSkills ?? [],
       isUrgent ?? false,
+      postedAsOpen,
     ]
   );
   return rows[0];
