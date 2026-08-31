@@ -447,6 +447,7 @@ export const createCheckoutOrder = asyncHandler(async (req, res) => {
       data: {
         orderId: order.orderId,
         paymentSessionId: order.paymentSessionId,
+        environment: order.environment,
         amount,
         currency: "INR",
       },
@@ -487,7 +488,7 @@ export const createCheckoutOrder = asyncHandler(async (req, res) => {
   emitProjectEvent(updatedProject, "STATUS_CHANGED", { status: "PENDING_FUNDS", actorRole: "business", senderId: req.user.id });
 
   res.status(201).json({
-    data: { orderId: order.orderId, paymentSessionId: order.paymentSessionId, amount, currency: "INR" },
+    data: { orderId: order.orderId, paymentSessionId: order.paymentSessionId, environment: order.environment, amount, currency: "INR" },
   });
 });
 

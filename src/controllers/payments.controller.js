@@ -88,7 +88,7 @@ export const createOrder = asyncHandler(async (req, res) => {
   }
 
   res.status(201).json({
-    data: { orderId: order.orderId, paymentSessionId: order.paymentSessionId, amount: order.amount, currency: order.currency },
+    data: { orderId: order.orderId, paymentSessionId: order.paymentSessionId, environment: order.environment, amount: order.amount, currency: order.currency },
   });
 });
 
@@ -219,7 +219,7 @@ export const createSubscriptionCheckout = asyncHandler(async (req, res) => {
   });
 
   res.status(201).json({
-    data: { orderId: order.orderId, paymentSessionId: order.paymentSessionId, amount, currency: "INR" },
+    data: { orderId: order.orderId, paymentSessionId: order.paymentSessionId, environment: order.environment, amount, currency: "INR" },
   });
 });
 

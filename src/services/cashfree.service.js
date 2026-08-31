@@ -73,7 +73,8 @@ async function cashfreeRequest(config, path, { method = "POST", body } = {}) {
 // lets us find the order back without a second lookup table, same reason
 // Razorpay's createOrder used `receipt` for this.
 export async function createOrder({ amountRupees, receipt, customer, returnUrl, notes }) {
-  const order = await cashfreeRequest(mustGetPgConfig(), "/orders", {
+  const config = mustGetPgConfig();
+  const order = await cashfreeRequest(config, "/orders", {
     body: {
       order_id: receipt,
       order_amount: Number(amountRupees),
@@ -97,6 +98,15 @@ export async function createOrder({ amountRupees, receipt, customer, returnUrl, 
     orderStatus: order.order_status,
     amount: order.order_amount,
     currency: order.order_currency,
+    // The frontend's Cashfree.js SDK must open a session in the SAME
+    // environment it was created in (a "sandbox"-mode SDK call rejects a
+    // session created against api.cashfree.com with "payment_session_id
+    // is not present or is invalid", and vice versa). Rather than trust a
+    // separately-configured frontend build flag (VITE_CASHFREE_MODE) to
+    // always match this server's real CASHFREE_APP_ID — which drifted out
+    // of sync in production and caused exactly that error — the backend
+    // now hands the frontend the one true answer it already computed here.
+    environment: config.baseUrl.includes("sandbox.cashfree.com") ? "sandbox" : "production",
   };
 }
 
@@ -105,7 +115,8 @@ export async function createOrder({ amountRupees, receipt, customer, returnUrl, 
 // an order already exists for this project) instead of minting a second
 // Cashfree order for the same checkout attempt.
 export async function getOrder(orderId) {
-  const order = await cashfreeRequest(mustGetPgConfig(), `/orders/${encodeURIComponent(orderId)}`, {
+  const config = mustGetPgConfig();
+  const order = await cashfreeRequest(config, `/orders/${encodeURIComponent(orderId)}`, {
     method: "GET",
   });
   return {
@@ -114,6 +125,7 @@ export async function getOrder(orderId) {
     orderStatus: order.order_status,
     amount: order.order_amount,
     currency: order.order_currency,
+    environment: config.baseUrl.includes("sandbox.cashfree.com") ? "sandbox" : "production",
   };
 }
 
