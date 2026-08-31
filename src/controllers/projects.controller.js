@@ -462,13 +462,18 @@ export const createCheckoutOrder = asyncHandler(async (req, res) => {
   const businessFeePct = Number(project.business_fee_pct ?? BUSINESS_FEE_PCT_FALLBACK);
   const amount = round2(Number(project.budget) * (1 + businessFeePct / 100));
 
+  // req.user is only { id, role } from the JWT — never the full profile
+  // (see guard.js) — so a real fetch is required for Cashfree to get the
+  // business's actual name/email/phone instead of its generic placeholders.
+  const business = await usersRepo.findById(project.business_id);
+
   // Outside any DB lock — this is a network call to Cashfree, and the
   // convention this file follows (see completeProject/cancelAndRefund
   // below) is to never hold a FOR UPDATE row lock across one.
   const order = await cashfreeService.createOrder({
     amountRupees: amount,
     receipt: project.id,
-    customer: { id: project.business_id, name: req.user.name, email: req.user.email, phone: req.user.phone },
+    customer: { id: business.id, name: business.name, email: business.email, phone: business.phone },
     returnUrl: `${process.env.FRONTEND_URL}/invoice?projectId=${project.id}&order_id={order_id}`,
     notes: { projectId: project.id, businessId: project.business_id },
   });

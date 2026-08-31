@@ -58,10 +58,14 @@ export const createOrder = asyncHandler(async (req, res) => {
 
   const amount = Math.round(amountInRupees * 100);
   const receipt = `rcpt_${Date.now()}`;
+  // req.user is only { id, role } from the JWT — never the full profile
+  // (see guard.js) — so a real fetch is required for Cashfree to get the
+  // customer's actual name/email/phone instead of its generic placeholders.
+  const user = await usersRepo.findById(req.user.id);
   const order = await cashfreeService.createOrder({
     amountRupees: amountInRupees,
     receipt,
-    customer: { id: req.user.id, name: req.user.name, email: req.user.email, phone: req.user.phone },
+    customer: { id: user.id, name: user.name, email: user.email, phone: user.phone },
     returnUrl: `${process.env.FRONTEND_URL}/pricing?order_id={order_id}`,
     notes,
   });
@@ -202,10 +206,17 @@ export const createSubscriptionCheckout = asyncHandler(async (req, res) => {
     throw ApiError.badRequest(`No such ${req.user.role} subscription tier/period: ${tier}/${billingPeriod}.`);
   }
 
+  // req.user is only { id, role } — decoded straight from the JWT (see
+  // guard.js), never the full profile — so req.user.name/email/phone are
+  // always undefined. A real fetch is required to hand Cashfree the
+  // customer's actual details instead of silently falling back to its
+  // generic placeholder phone/email on every single checkout.
+  const user = await usersRepo.findById(req.user.id);
+
   const order = await cashfreeService.createOrder({
     amountRupees: amount,
     receipt: `sub_${req.user.id}_${Date.now()}`,
-    customer: { id: req.user.id, name: req.user.name, email: req.user.email, phone: req.user.phone },
+    customer: { id: user.id, name: user.name, email: user.email, phone: user.phone },
     returnUrl: `${process.env.FRONTEND_URL}/pricing?order_id={order_id}`,
     notes: { userId: req.user.id, tier, billingPeriod },
   });
