@@ -31,7 +31,7 @@ import {
   addTeamMember,
   removeTeamMember,
 } from "../controllers/admin.controller.js";
-import { listPendingSubmissions, listReviewedSubmissions, reviewSubmission } from "../controllers/submissions.controller.js";
+import { listPendingSubmissions, listReviewedSubmissions, listCancelledSubmissions, reviewSubmission } from "../controllers/submissions.controller.js";
 import { reviewSubmissionSchema } from "../validators/submissions.validators.js";
 
 export const adminRouter = Router();
@@ -89,4 +89,5 @@ adminRouter.delete("/team/:id", removeTeamMember);
 // The Trust Checker's moderation queue.
 adminRouter.get("/submissions", listPendingSubmissions);
 adminRouter.get("/submissions/history", listReviewedSubmissions);
+adminRouter.get("/submissions/cancelled", listCancelledSubmissions);
 adminRouter.patch("/submissions/:id", validate(reviewSubmissionSchema), reviewSubmission);

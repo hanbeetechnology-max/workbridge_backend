@@ -78,6 +78,15 @@ export const listReviewedSubmissions = asyncHandler(async (_req, res) => {
   res.json({ data });
 });
 
+// GET /api/admin/submissions/cancelled — submissions still PENDING_REVIEW
+// whose project was cancelled before anyone reviewed them. Excluded from
+// listPendingSubmissions above (nothing left to action), shown here
+// instead of just vanishing from the queue with no record.
+export const listCancelledSubmissions = asyncHandler(async (_req, res) => {
+  const data = await submissionsRepo.listCancelled();
+  res.json({ data });
+});
+
 // PATCH /api/admin/submissions/:id — body: { approved: boolean, rejectionReason? }
 export const reviewSubmission = asyncHandler(async (req, res) => {
   const { id } = req.params;

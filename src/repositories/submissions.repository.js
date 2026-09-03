@@ -45,6 +45,13 @@ export async function listForProject(projectId) {
   return rows;
 }
 
+// Projects are never hard-deleted (CANCELLED is the real "gone" state —
+// see the FSM in domain/projectStatus.js), so a submission made before
+// cancellation never disappears on its own; it just sits at
+// PENDING_REVIEW forever with nothing left to actually do about it. This
+// excludes those (see listCancelled below, which is exactly the
+// complement) so the real, actionable queue an admin can still act on
+// doesn't get cluttered with dead projects.
 export async function listPendingReview() {
   const { rows } = await query(
     `SELECT s.*, u.name AS submitted_by_name, p.title AS project_title,
@@ -52,8 +59,28 @@ export async function listPendingReview() {
      FROM submissions s
      JOIN public_user_profiles u ON u.id = s.submitted_by
      JOIN projects p ON p.id = s.project_id
-     WHERE s.status = 'PENDING_REVIEW'
+     WHERE s.status = 'PENDING_REVIEW' AND p.status != 'CANCELLED'
      ORDER BY s.created_at ASC`
+  );
+  return rows;
+}
+
+// The complement of the filter above — still PENDING_REVIEW, but the
+// project it belonged to was cancelled before an admin ever got to it.
+// Its own tab (AdminContentReviewTab.jsx) rather than silently vanishing,
+// so there's still a record of what was submitted and a real reason it
+// was never actioned, instead of it just disappearing from the queue with
+// no trace.
+export async function listCancelled() {
+  const { rows } = await query(
+    `SELECT s.*, u.name AS submitted_by_name, p.title AS project_title,
+            p.business_id, p.worker_id
+     FROM submissions s
+     JOIN public_user_profiles u ON u.id = s.submitted_by
+     JOIN projects p ON p.id = s.project_id
+     WHERE s.status = 'PENDING_REVIEW' AND p.status = 'CANCELLED'
+     ORDER BY p.updated_at DESC
+     LIMIT 200`
   );
   return rows;
 }
