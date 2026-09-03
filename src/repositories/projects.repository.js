@@ -137,6 +137,14 @@ export async function list({ businessId, workerId, status, page, pageSize, viewe
 // everyone else sees it once it's been public for 3 hours. No subscription
 // check here — that track is deferred, so "top worker" is decided purely
 // by the real, already-existing tier system.
+//
+// application_deadline (once passed) drops a post from THIS feed only —
+// the business still sees it on their own side (listByBusiness/list()
+// below have no such filter, since it's their post regardless of whether
+// new applicants can still reach it) and it stays OPEN/postable-to until
+// they act on it. createCandidate in job_candidates.controller.js is the
+// matching server-side enforcement for a worker trying to apply directly
+// by project id after the deadline, in case this feed's filter is bypassed.
 export async function listOpen(viewerLevel = 0) {
   const { rows } = await query(
     `SELECT p.*, COALESCE(NULLIF(b.profile->>'companyName', ''), b.name) AS business_name,
@@ -152,6 +160,7 @@ export async function listOpen(viewerLevel = 0) {
      FROM projects p
      JOIN public_user_profiles b ON b.id = p.business_id
      WHERE p.status = 'OPEN'
+       AND (p.application_deadline IS NULL OR p.application_deadline > now())
        AND (
          p.is_urgent = false
          OR $1 >= (SELECT level_threshold FROM gamification_config WHERE tier_name = 'Silver')

@@ -25,6 +25,15 @@ export const createCandidate = asyncHandler(async (req, res) => {
   let source;
 
   if (req.user.role === "worker") {
+    // The public application window — a direct INVITE from the business
+    // (below) is a separate channel and isn't gated by this; only a
+    // worker applying on their own off the open job board is. Previously
+    // unenforced: application_deadline was stored at posting time but
+    // never checked anywhere, so a worker could apply indefinitely after
+    // "Closes in ..." turned into "Closed" on the job feed.
+    if (project.application_deadline && new Date(project.application_deadline) <= new Date()) {
+      throw ApiError.badRequest("The application window for this job has closed.");
+    }
     source = "APPLICATION";
     workerId = req.user.id;
   } else if (req.user.role === "business") {
