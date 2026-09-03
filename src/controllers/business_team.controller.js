@@ -17,13 +17,18 @@ function assertOwner(req) {
   }
 }
 
-async function assertEnterpriseActive(ownerId) {
-  const owner = await usersRepo.findById(ownerId);
-  const active = owner?.subscription_tier === "ENTERPRISE" && owner?.subscription_expires_at && new Date(owner.subscription_expires_at) > new Date();
-  if (!active) {
-    throw ApiError.forbidden("Multi-user access is an Enterprise plan perk — upgrade to add team members.");
-  }
-}
+// Subscription plans are hidden for now (BusinessPayments.jsx's
+// Subscription Plans tab is commented out, not deleted) — every business
+// gets Team Access free until they come back. Un-comment this gate (and
+// its call site below) together with the tab to restore the real
+// Enterprise-only restriction.
+// async function assertEnterpriseActive(ownerId) {
+//   const owner = await usersRepo.findById(ownerId);
+//   const active = owner?.subscription_tier === "ENTERPRISE" && owner?.subscription_expires_at && new Date(owner.subscription_expires_at) > new Date();
+//   if (!active) {
+//     throw ApiError.forbidden("Multi-user access is an Enterprise plan perk — upgrade to add team members.");
+//   }
+// }
 
 // GET /api/business/team — visible to the owner and every team member
 // (full access includes seeing who else is on the team), not just the owner.
@@ -33,11 +38,12 @@ export const listTeam = asyncHandler(async (req, res) => {
 });
 
 // POST /api/business/team — body: { name, email, password, phone? }.
-// Owner-only, and only while Enterprise is actually active (re-checked
-// here, not just trusted from the pricing page) — no seat cap.
+// Owner-only. The Enterprise-active check is commented out for now (see
+// assertEnterpriseActive above) — every business can add team members
+// free until subscriptions come back. No seat cap either way.
 export const addTeamMember = asyncHandler(async (req, res) => {
   assertOwner(req);
-  await assertEnterpriseActive(req.user.id);
+  // await assertEnterpriseActive(req.user.id);
 
   const { name, email, password, phone } = req.body ?? {};
   if (!name || !String(name).trim()) throw ApiError.badRequest("Name is required.");

@@ -304,18 +304,20 @@ export const login = asyncHandler(async (req, res) => {
   // last_login_at atomically (see users.repository.js's recordLogin).
   const loggedInUser = await usersRepo.recordLogin(user.id);
 
-  // Multi-User Access (migrations/051_business_team_members.sql) is an
-  // Enterprise-tier perk, not a permanent grant — re-checked at every
-  // login (not on every request; a 7-day token can outlive a same-session
-  // downgrade, an accepted tradeoff for not adding a DB round trip to
-  // every guarded request) so a lapsed/downgraded plan actually stops new
-  // team-member sign-ins rather than silently keeping seats forever.
+  // Multi-User Access (migrations/051_business_team_members.sql) is
+  // normally an Enterprise-tier perk, re-checked at every login — but
+  // subscription plans are hidden for now (BusinessPayments.jsx's
+  // Subscription Plans tab is commented out, not deleted), so the tier
+  // check is commented out too: every team member can sign in regardless
+  // of the owner's tier until subscriptions come back. Only the owner's
+  // own is_active still gates this (a genuinely suspended business
+  // shouldn't grant its team members access either).
   if (loggedInUser.business_owner_id) {
     const owner = await usersRepo.findById(loggedInUser.business_owner_id);
-    const ownerTierActive =
-      owner?.subscription_tier === "ENTERPRISE" && owner?.subscription_expires_at && new Date(owner.subscription_expires_at) > new Date();
-    if (!owner || !owner.is_active || !ownerTierActive) {
-      throw ApiError.forbidden("Your business's Enterprise plan isn't active — team access is paused. Contact your business owner.");
+    // const ownerTierActive =
+    //   owner?.subscription_tier === "ENTERPRISE" && owner?.subscription_expires_at && new Date(owner.subscription_expires_at) > new Date();
+    if (!owner || !owner.is_active) {
+      throw ApiError.forbidden("Your business account isn't active — team access is paused. Contact your business owner.");
     }
     res.json({ data: { token: issueToken(loggedInUser), user: toTeamMemberSelf(owner, loggedInUser) } });
     return;
